@@ -23,14 +23,6 @@ project "rtmp"
     defines { "RTMP" }
     files { "rtmp.cs" }
 
-project "client"
-    files { "client.cs", "shared_h.cs" }
-    links { "rtmp" }
-
-project "server"
-    files { "server.cs", "shared_h.cs" }
-    links { "rtmp" }
-
 if not os.istarget "windows" then
 else
 

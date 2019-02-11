@@ -1,7 +1,9 @@
 //#define SOAK
 using Rtmp;
+using Rtmp.Net;
 using System;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 public static class test
 {
@@ -33,6 +35,35 @@ public static class test
         check(bytes[3] == 0x11);
     }
 
+    static async Task test_connect()
+    {
+        var key = "";
+        var context = new SerializationContext();
+        var options = new RtmpClient.Options()
+        {
+            // required parameters:
+            //Url = "rtmp://ingress.winky.com:1234",
+            Url = $"rtmp://live.twitch.tv/app/{key}",
+            Context = context,
+
+            //// optional parameters:
+            //AppName = "demo-app",                                  // optional app name, passed to the remote server during connect.
+            //PageUrl = "https://example.com/rtmpsharp/demo.html",   // optional page url, passed to the remote server during connect.
+            //SwfUrl = "",                                          // optional swf url, passed to the remote server during connect.
+            //FlashVersion = "WIN 21,0,0,174",                            // optional flash version, paased to the remote server during connect.
+
+            //ChunkLength = 4192,                                        // optional outgoing rtmp chunk length.
+            //Validate = (sender, certificate, chain, errors) => true // optional certificate validation callback. used only in tls connections.
+        };
+
+        var client = await RtmpClient.ConnectAsync(options);
+        var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+    }
+
+    static void test_connect2()
+    {
+    }
+
     static void RUN_TEST(string name, Action test_function)
     {
         Console.Write($"{name}\n");
@@ -42,6 +73,18 @@ public static class test
         //    Environment.Exit(1);
         //}
         test_function();
+        //ShutdownRtmp();
+    }
+
+    static void RUN_TESTASYNC(string name, Func<Task> test_function)
+    {
+        Console.Write($"{name}\n");
+        //if (!InitializeRtmp())
+        //{
+        //    Console.Write("error: failed to initialize rtmp\n");
+        //    Environment.Exit(1);
+        //}
+        test_function().Wait();
         //ShutdownRtmp();
     }
 
@@ -66,7 +109,9 @@ public static class test
         {
             Console.Write("\n[rtmp]\n\n");
 
-            RUN_TEST("test_endian", test_endian);
+            //RUN_TEST("test_endian", test_endian);
+            RUN_TESTASYNC("test_connect", test_connect);
+            //RUN_TEST("test_connect2", test_connect2);
 
 #if SOAK
             if (quit)

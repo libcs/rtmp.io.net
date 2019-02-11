@@ -90,16 +90,16 @@ namespace Rtmp
 
             static readonly Type[] DefaultTypes =
             {
-            typeof(AcknowledgeMessage),
-            typeof(ArrayCollection),
-            typeof(AsyncMessage),
-            typeof(ByteArray),
-            typeof(CommandMessage),
-            typeof(ErrorMessage),
-            typeof(FlexMessage),
-            typeof(ObjectProxy),
-            typeof(RemotingMessage)
-        };
+                typeof(AcknowledgeMessage),
+                typeof(ArrayCollection),
+                typeof(AsyncMessage),
+                typeof(ByteArray),
+                typeof(CommandMessage),
+                typeof(ErrorMessage),
+                typeof(FlexMessage),
+                typeof(ObjectProxy),
+                typeof(RemotingMessage)
+            };
         }
 
         #endregion
