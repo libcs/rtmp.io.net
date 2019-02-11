@@ -46,9 +46,9 @@ public static class test
             Url = $"rtmp://live.twitch.tv/app/{key}",
             Context = context,
 
-            //// optional parameters:
-            //AppName = "demo-app",                                  // optional app name, passed to the remote server during connect.
-            //PageUrl = "https://example.com/rtmpsharp/demo.html",   // optional page url, passed to the remote server during connect.
+            // optional parameters:
+            AppName = "demo-app",                                  // optional app name, passed to the remote server during connect.
+            PageUrl = "https://example.com/rtmpsharp/demo.html",   // optional page url, passed to the remote server during connect.
             //SwfUrl = "",                                          // optional swf url, passed to the remote server during connect.
             //FlashVersion = "WIN 21,0,0,174",                            // optional flash version, paased to the remote server during connect.
 
