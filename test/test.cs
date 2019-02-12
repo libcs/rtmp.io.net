@@ -39,6 +39,8 @@ public static class test
     {
         var key = "";
         var context = new SerializationContext();
+        // route ADD 52.223.226.223 MASK 255.255.255.255 127.0.0.1
+        // route ADD 52.223.226.223 MASK 255.255.255.0 127.0.0.1
         var options = new RtmpClient.Options()
         {
             // required parameters:
@@ -57,11 +59,23 @@ public static class test
         };
 
         var client = await RtmpClient.ConnectAsync(options);
-        var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+        //var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+        client.Dispose();
     }
 
-    static void test_connect2()
+    static async Task test_connect2()
     {
+        var context = new SerializationContext();
+        var options = new RtmpServer.Options()
+        {
+            // required parameters:
+            Url = "rtmp://localhost",
+            Context = context,
+        };
+
+        var server = await RtmpServer.ConnectAsync(options);
+        server.Wait();
+        server.Dispose();
     }
 
     static void RUN_TEST(string name, Action test_function)
@@ -110,8 +124,8 @@ public static class test
             Console.Write("\n[rtmp]\n\n");
 
             //RUN_TEST("test_endian", test_endian);
-            RUN_TESTASYNC("test_connect", test_connect);
-            //RUN_TEST("test_connect2", test_connect2);
+            //RUN_TESTASYNC("test_connect", test_connect);
+            RUN_TESTASYNC("test_connect2", test_connect2);
 
 #if SOAK
             if (quit)

@@ -70,7 +70,7 @@ namespace Rtmp.Net
         public static uint CurrentTime => 0;
     }
 
-    public class RtmpClient
+    public class RtmpClient : IDisposable
     {
         const int DefaultPort = 1935;
 
@@ -112,6 +112,9 @@ namespace Rtmp.Net
             source = new CancellationTokenSource();
             token = source.Token;
         }
+
+        public void Dispose() =>
+            CloseAsync(true).Wait();
 
         #region internal callbacks
 
@@ -226,6 +229,7 @@ namespace Rtmp.Net
         #region internal helper methods
 
         uint NextInvokeId() => (uint)Interlocked.Increment(ref invokeId);
+
         ClientDisconnectedException DisconnectedException() => new ClientDisconnectedException(cause.message, cause.inner);
 
         // calls a remote endpoint, sent along the specified chunk stream id, on message stream id #0
@@ -308,6 +312,38 @@ namespace Rtmp.Net
                 tcUrl: uri.ToString(),
                 flashVersion: options.FlashVersion,
                 arguments: options.Arguments);
+
+            return client;
+        }
+
+        //internal RtmpClient(RtmpServer server, SerializationContext context, Stream stream, int chunkLength)
+        //{
+        //    this.context = context;
+        //    callbacks = new TaskCallbackManager<uint, object>();
+        //    source = new CancellationTokenSource();
+        //    token = source.Token;
+        //}
+
+        internal static async Task<RtmpClient> ConnectAsync(RtmpServer server, SerializationContext context, Stream stream, int chunkLength)
+        {
+            await Handshake.GoAsyncServer(stream);
+
+            var client = new RtmpClient(context);
+            var writer = new Writer(client, stream, context, client.token);
+            var reader = new Reader(client, stream, context, client.token);
+
+            writer.RunAsync(chunkLength).Forget();
+            reader.RunAsync().Forget();
+
+            //client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
+            //client.clientId = await RtmpConnectAsync(
+            //    client: client,
+            //    appName: options.AppName,
+            //    pageUrl: options.PageUrl,
+            //    swfUrl: options.SwfUrl,
+            //    tcUrl: uri.ToString(),
+            //    flashVersion: options.FlashVersion,
+            //    arguments: options.Arguments);
 
             return client;
         }
@@ -515,6 +551,21 @@ namespace Rtmp.Net
 
                 await WriteC2Async(stream, s1.time, s1.random);
                 var s2 = await ReadS2Async(stream);
+
+                if (c1.time != s2.echoTime || !ByteSpaceComparer.IsEqual(c1.random, s2.echoRandom))
+                    throw InvalidHandshakeException();
+            }
+
+            public static async Task GoAsyncServer(Stream stream)
+            {
+                var s1 = await ReadS1Async(stream);
+                var c1 = await WriteC1Async(stream);
+
+                if (s1.zero != 0 || s1.three != 3)
+                    throw InvalidHandshakeException();
+
+                var s2 = await ReadS2Async(stream);
+                await WriteC2Async(stream, s1.time, s1.random);
 
                 if (c1.time != s2.echoTime || !ByteSpaceComparer.IsEqual(c1.random, s2.echoRandom))
                     throw InvalidHandshakeException();
