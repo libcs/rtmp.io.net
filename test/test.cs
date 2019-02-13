@@ -69,7 +69,7 @@ public static class test
         var options = new RtmpServer.Options()
         {
             // required parameters:
-            Url = "rtmp://localhost",
+            Url = "rtmp://live-sea.twitch.tv/app/key",
             Context = context,
         };
 

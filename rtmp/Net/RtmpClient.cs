@@ -332,10 +332,10 @@ namespace Rtmp.Net
             var writer = new Writer(client, stream, context, client.token);
             var reader = new Reader(client, stream, context, client.token);
 
-            writer.RunAsync(chunkLength).Forget();
             reader.RunAsync().Forget();
+            writer.RunAsync(chunkLength).Forget();
 
-            //client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
+            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
             //client.clientId = await RtmpConnectAsync(
             //    client: client,
             //    appName: options.AppName,
@@ -558,16 +558,16 @@ namespace Rtmp.Net
 
             public static async Task GoAsyncServer(Stream stream)
             {
-                var s1 = await ReadS1Async(stream);
-                var c1 = await WriteC1Async(stream);
+                var c1 = await ReadS1Async(stream);
+                var s1 = await WriteC1Async(stream);
 
-                if (s1.zero != 0 || s1.three != 3)
+                if ((false && c1.zero != 0) || c1.three != 3)
                     throw InvalidHandshakeException();
 
-                var s2 = await ReadS2Async(stream);
-                await WriteC2Async(stream, s1.time, s1.random);
+                await WriteC2Async(stream, c1.time, c1.random);
+                var c2 = await ReadS2Async(stream);
 
-                if (c1.time != s2.echoTime || !ByteSpaceComparer.IsEqual(c1.random, s2.echoRandom))
+                if (s1.time != c2.echoTime || !ByteSpaceComparer.IsEqual(s1.random, c2.echoRandom))
                     throw InvalidHandshakeException();
             }
 
@@ -602,9 +602,9 @@ namespace Rtmp.Net
                 var buffer = await stream.ReadBytesAsync(C1Length);
                 var reader = new AmfReader(buffer, EmptyContext);
 
-                var three = reader.ReadByte();             // rtmp version (constant 3) [s0]
-                var time = reader.ReadUInt32();           // time                      [s1]
-                var zero = reader.ReadUInt32();           // zero                      [s1]
+                var three = reader.ReadByte();              // rtmp version (constant 3) [s0]
+                var time = reader.ReadUInt32();             // time                      [s1]
+                var zero = reader.ReadUInt32();             // zero                      [s1]
                 var random = reader.ReadSpan(RandomLength); // random bytes              [s1]
 
                 return (three, time, zero, random);
@@ -1011,32 +1011,29 @@ namespace Rtmp.Net
             readonly AmfReader __readFramesFromBufferReader;
             readonly AmfReader __readSingleFrameReader;
 
-
             public Reader(RtmpClient owner, Stream stream, SerializationContext context, CancellationToken cancellationToken)
             {
                 this.owner = owner;
                 this.stream = stream;
                 this.context = context;
-                this.token = cancellationToken;
+                token = cancellationToken;
 
-                this.reset = new AsyncAutoResetEvent();
-                this.queue = new ConcurrentQueue<Builder>();
-                this.streams = new KeyDictionary<int, ChunkStream.Snapshot>();
-                this.messages = new KeyDictionary<(int, uint), Builder>();
+                reset = new AsyncAutoResetEvent();
+                queue = new ConcurrentQueue<Builder>();
+                streams = new KeyDictionary<int, ChunkStream.Snapshot>();
+                messages = new KeyDictionary<(int, uint), Builder>();
 
-                this.buffer = new byte[DefaultBufferLength];
-                this.available = 0;
+                buffer = new byte[DefaultBufferLength];
+                available = 0;
 
-                this.__readSingleFrameReader = new AmfReader(context);
-                this.__readFramesFromBufferReader = new AmfReader(context);
+                __readSingleFrameReader = new AmfReader(context);
+                __readFramesFromBufferReader = new AmfReader(context);
             }
-
 
             // this method must only be called once
             public async Task RunAsync()
             {
                 while (!token.IsCancellationRequested)
-                {
                     try
                     {
                         await ReadOnceAsync();
@@ -1052,7 +1049,6 @@ namespace Rtmp.Net
                         owner.InternalCloseConnection("reader-exception", e);
                         return;
                     }
-                }
             }
 
             async Task ReadOnceAsync()

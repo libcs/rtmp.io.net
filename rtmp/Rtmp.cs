@@ -11,65 +11,6 @@ using System.Reflection;
 
 namespace Rtmp
 {
-    internal class rtmp
-    {
-        #region assert / logging
-
-        public const int LOG_LEVEL_NONE = 0;
-        public const int LOG_LEVEL_ERROR = 1;
-        public const int LOG_LEVEL_INFO = 2;
-        public const int LOG_LEVEL_DEBUG = 3;
-
-        [DebuggerStepThrough, Conditional("DEBUG")]
-        public static void assert(bool condition)
-        {
-            if (!condition)
-            {
-                var stackFrame = new StackTrace().GetFrame(1);
-                assert_function?.Invoke(null, stackFrame.GetMethod().Name, stackFrame.GetFileName(), stackFrame.GetFileLineNumber());
-                Environment.Exit(1);
-            }
-        }
-
-        static void default_assert_handler(string condition, string function, string file, int line)
-        {
-            Console.Write($"assert failed: ( {condition} ), function {function}, file {file}, line {line}\n");
-            Debugger.Break();
-            Environment.Exit(1);
-        }
-
-        static int log_level_ = 0;
-
-        static Action<string> printf_function =
-            x => Console.Write(x);
-
-        public static Action<string, string, string, int> assert_function = default_assert_handler;
-
-        public static void log_level(int level) =>
-            log_level_ = level;
-
-        public static void set_printf_function(Action<string> function)
-        {
-            assert(function != null);
-            printf_function = function;
-        }
-
-        public static void set_assert_function(Action<string, string, string, int> function) =>
-            assert_function = function;
-
-#if !RTMP_ENABLE_LOGGING
-        internal static void printf(int level, string format)
-        {
-            if (level > log_level_) return;
-            printf_function(format);
-        }
-#else
-        static void printf(int level, string format) { }
-#endif
-
-        #endregion
-    }
-
     [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
     public sealed class RtmpIgnoreAttribute : Attribute { }
 
