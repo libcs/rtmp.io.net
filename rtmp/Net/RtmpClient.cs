@@ -316,38 +316,6 @@ namespace Rtmp.Net
             return client;
         }
 
-        //internal RtmpClient(RtmpServer server, SerializationContext context, Stream stream, int chunkLength)
-        //{
-        //    this.context = context;
-        //    callbacks = new TaskCallbackManager<uint, object>();
-        //    source = new CancellationTokenSource();
-        //    token = source.Token;
-        //}
-
-        internal static async Task<RtmpClient> ConnectAsync(RtmpServer server, SerializationContext context, Stream stream, int chunkLength)
-        {
-            await Handshake.GoAsyncServer(stream);
-
-            var client = new RtmpClient(context);
-            var writer = new Writer(client, stream, context, client.token);
-            var reader = new Reader(client, stream, context, client.token);
-
-            reader.RunAsync().Forget();
-            writer.RunAsync(chunkLength).Forget();
-
-            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
-            //client.clientId = await RtmpConnectAsync(
-            //    client: client,
-            //    appName: options.AppName,
-            //    pageUrl: options.PageUrl,
-            //    swfUrl: options.SwfUrl,
-            //    tcUrl: uri.ToString(),
-            //    flashVersion: options.FlashVersion,
-            //    arguments: options.Arguments);
-
-            return client;
-        }
-
         static async Task<Stream> GetStreamAsync(Uri uri, Stream stream, RemoteCertificateValidationCallback validate)
         {
             CheckDebug.NotNull(uri, stream, validate);
@@ -400,6 +368,65 @@ namespace Rtmp.Net
                 ? clientId as string
                 : null;
         }
+
+        #endregion
+
+        #region (static) serverconnectasync
+
+        internal static async Task<RtmpClient> ServerConnectAsync(RtmpServer server, Options options, Stream stream)
+        {
+            Check.NotNull(options.Context);
+
+            var chunkLength = options.ChunkLength;
+            var context = options.Context;
+
+            await Handshake.ServerGoAsync(stream);
+
+            var client = new RtmpClient(context);
+            var writer = new Writer(client, stream, context, client.token);
+            var reader = new Reader(client, stream, context, client.token);
+
+            reader.RunAsync().Forget();
+            writer.RunAsync(chunkLength).Forget();
+
+            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
+            //client.clientId = await RtmpServerConnectAsync(
+            //    client: client,
+            //    options: options);
+
+            return client;
+        }
+
+        // attempts to perform an rtmp connect, and returns the client id assigned to us (if any - this may be null)
+        //static async Task<string> RtmpServerConnectAsync(RtmpClient client, Options option)
+        //{
+        //    var request = new InvokeAmf0
+        //    {
+        //        InvokeId = client.NextInvokeId(),
+        //        MethodName = "connect",
+        //        Arguments = arguments ?? EmptyArray<object>.Instance,
+        //        Headers = new AsObject()
+        //        {
+        //            { "app",            appName          },
+        //            { "audioCodecs",    3575             },
+        //            { "capabilities",   239              },
+        //            { "flashVer",       flashVersion     },
+        //            { "fpad",           false            },
+        //            { "objectEncoding", (double)3        }, // currently hard-coded to amf3
+        //            { "pageUrl",        pageUrl          },
+        //            { "swfUrl",         swfUrl           },
+        //            { "tcUrl",          tcUrl            },
+        //            { "videoCodecs",    252              },
+        //            { "videoFunction",  1                },
+        //        },
+        //    };
+
+        //    var response = await client.InternalCallAsync(request, chunkStreamId: 3) as IDictionary<string, object>;
+
+        //    return response != null && (response.TryGetValue("clientId", out var clientId) || response.TryGetValue("id", out clientId))
+        //        ? clientId as string
+        //        : null;
+        //}
 
         #endregion
 
@@ -556,12 +583,12 @@ namespace Rtmp.Net
                     throw InvalidHandshakeException();
             }
 
-            public static async Task GoAsyncServer(Stream stream)
+            public static async Task ServerGoAsync(Stream stream, bool hasC1Zero = true)
             {
                 var c1 = await ReadS1Async(stream);
                 var s1 = await WriteC1Async(stream);
 
-                if ((false && c1.zero != 0) || c1.three != 3)
+                if ((hasC1Zero && c1.zero != 0) || c1.three != 3)
                     throw InvalidHandshakeException();
 
                 await WriteC2Async(stream, c1.time, c1.random);

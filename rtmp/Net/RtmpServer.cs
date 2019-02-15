@@ -18,6 +18,12 @@ namespace Rtmp.Net
     {
         const int DefaultPort = 1935;
 
+        public struct ServerClient
+        {
+            public RtmpClient Client;
+            public RtmpClient.Options Options;
+        }
+
         // the cancellation source (and token) that this server internally uses to signal disconnection
         readonly CancellationToken token;
         readonly CancellationTokenSource source;
@@ -28,7 +34,7 @@ namespace Rtmp.Net
         // the callback manager that handles completing invocation requests
         readonly TaskCallbackManager<uint, object> callbacks;
 
-        RtmpClient[] clients;
+        ServerClient[] clients;
         int num_connected_clients;
 
         RtmpServer(SerializationContext context, int max_clients)
@@ -38,7 +44,7 @@ namespace Rtmp.Net
             source = new CancellationTokenSource();
             token = source.Token;
             Kon.Emit($"server started with {max_clients} client slots\n");
-            clients = new RtmpClient[max_clients];
+            clients = new ServerClient[max_clients];
             num_connected_clients = 0;
         }
 
@@ -59,9 +65,9 @@ namespace Rtmp.Net
 
         public static async Task<RtmpServer> ConnectAsync(Options options, int max_clients = 5)
         {
-            Check.NotNull(options.Url, options.Context);
+            Check.NotNull(options.Context);
 
-            var url = options.Url;
+            var url = options.Url ?? "rtmp://any";
             var chunkLength = options.ChunkLength;
             var context = options.Context;
             var validate = options.Validate ?? ((sender, certificate, chain, errors) => true);
@@ -75,8 +81,10 @@ namespace Rtmp.Net
             {
                 Kon.Emit($"client {server.num_connected_clients} connected from {tcp.Client.LocalEndPoint}\n");
                 var stream = await GetStreamAsync(uri, tcp.GetStream(), validate, serverCertificate);
-                var client = await RtmpClient.ConnectAsync(server, context, stream, chunkLength);
-                server.clients[server.num_connected_clients++] = client;
+                var serverClient = new ServerClient();
+                serverClient.Client = await RtmpClient.ServerConnectAsync(server, serverClient.Options, stream);
+                Kon.Assert(server.num_connected_clients < max_clients);
+                server.clients[server.num_connected_clients++] = serverClient;
             }).Forget();
 
             return server;
@@ -105,10 +113,8 @@ namespace Rtmp.Net
                 }
         }
 
-        public void Wait()
-        {
+        public void Wait() =>
             token.WaitHandle.WaitOne();
-        }
 
         static async Task<Stream> GetStreamAsync(Uri uri, Stream stream, RemoteCertificateValidationCallback validate, X509Certificate serverCertificate)
         {
@@ -134,10 +140,8 @@ namespace Rtmp.Net
 
         #endregion
 
-        public Task CloseAsync(bool forced = false)
-        {
-            return Task.CompletedTask;
-        }
+        public Task CloseAsync(bool forced = false) =>
+            Task.CompletedTask;
     }
 
     #endregion

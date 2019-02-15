@@ -39,8 +39,6 @@ public static class test
     {
         var key = "";
         var context = new SerializationContext();
-        // route ADD 52.223.226.223 MASK 255.255.255.255 127.0.0.1
-        // route ADD 52.223.226.223 MASK 255.255.255.0 127.0.0.1
         var options = new RtmpClient.Options()
         {
             // required parameters:
@@ -58,24 +56,26 @@ public static class test
             //Validate = (sender, certificate, chain, errors) => true // optional certificate validation callback. used only in tls connections.
         };
 
-        var client = await RtmpClient.ConnectAsync(options);
-        //var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
-        client.Dispose();
+        using (var client = await RtmpClient.ConnectAsync(options))
+        {
+            //var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+        }
     }
 
     static async Task test_connect2()
     {
+        // route ADD 52.223.225.248 MASK 255.255.255.248 127.0.0.1
         var context = new SerializationContext();
         var options = new RtmpServer.Options()
         {
             // required parameters:
-            Url = "rtmp://live-sea.twitch.tv/app/key",
+            //Url = "rtmp://live-sea.twitch.tv/app/key",
+            //Url = "rtmp://anyv4",
             Context = context,
         };
 
-        var server = await RtmpServer.ConnectAsync(options);
-        server.Wait();
-        server.Dispose();
+        using (var server = await RtmpServer.ConnectAsync(options))
+            server.Wait();
     }
 
     static void RUN_TEST(string name, Action test_function)
