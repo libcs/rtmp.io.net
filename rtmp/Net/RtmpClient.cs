@@ -78,6 +78,10 @@ namespace Rtmp.Net
         public event EventHandler<ClientDisconnectedException> Disconnected;
         public event EventHandler<Exception> CallbackException;
 
+        // the server
+        internal readonly RtmpServer server;
+        readonly Options options;
+
         // the cancellation source (and token) that this client internally uses to signal disconnection
         readonly CancellationToken token;
         readonly CancellationTokenSource source;
@@ -105,6 +109,12 @@ namespace Rtmp.Net
         // a tuple describing the cause of the disconnection. either value may be null.
         (string message, Exception inner) cause;
 
+        RtmpClient(RtmpServer server, Options options, SerializationContext context)
+            : this(context)
+        {
+            this.server = server;
+            this.options = options;
+        }
         RtmpClient(SerializationContext context)
         {
             this.context = context;
@@ -136,6 +146,42 @@ namespace Rtmp.Net
             WrapCallback(() => Disconnected?.Invoke(this, DisconnectedException()));
         }
 
+        // called in server connect
+        void InternalReceiveConnect(AsObject headers)
+        {
+            bool ParseHeadersAndConnect()
+            {
+                object x;
+                options.AppName = headers.TryGetValue("app", out x) && x is string q ? q : null;
+                options.FlashVersion = headers.TryGetValue("flashver", out x) && x is string r ? r : null;
+                options.SwfUrl = headers.TryGetValue("swfUrl", out x) && x is string s ? s : null;
+                options.Url = headers.TryGetValue("tcUrl", out x) && x is string t ? t : null;
+                options.PageUrl = headers.TryGetValue("pageUrl", out x) && x is string u ? u : null;
+                return true;
+            }
+            Check.NotNull(options);
+
+            if (!ParseHeadersAndConnect())
+                queue(new InvokeAmf0
+                {
+                    InvokeId = NextInvokeId(),
+                    MethodName = "_error",
+                    Arguments = new[] { $"unable to connect to {options.AppName}" }
+                }, 2);
+            var serverOptions = server.options;
+            queue(new WindowAcknowledgementSize(serverOptions.WindowAcknowledgementSize), 2);
+            queue(new PeerBandwidth(serverOptions.PeerBandwidth.Bandwidth, serverOptions.PeerBandwidth.LimitType), 2);
+            queue(new UserControlMessage(UserControlMessage.Type.StreamBegin, new[] { 0U }), 2);
+            queue(new ChunkLength(serverOptions.ChunkLength), 2);
+            queue(new InvokeAmf0
+            {
+                InvokeId = NextInvokeId(),
+                MethodName = "_result",
+                Arguments = new[] { new AsObject {
+                    { "clientId", clientId } } }
+            }, 2);
+        }
+
         // this method will never throw an exception unless that exception will be fatal to this connection, and thus
         // the connection would be forced to close.
         void InternalReceiveEvent(RtmpMessage message)
@@ -143,12 +189,14 @@ namespace Rtmp.Net
             switch (message)
             {
                 case UserControlMessage u when u.EventType == UserControlMessage.Type.PingRequest:
+                    Kon.Trace("PingRequest");
                     queue(new UserControlMessage(UserControlMessage.Type.PingResponse, u.Values), 2);
                     break;
 
                 case Invoke i:
                     var param = i.Arguments?.FirstOrDefault();
 
+                    Kon.Trace($"INVOKE:{i.MethodName}");
                     switch (i.MethodName)
                     {
                         case "_result":
@@ -186,7 +234,6 @@ namespace Rtmp.Net
                                     callbacks.SetException(i.InvokeId, new InvocationException());
                                     break;
                             }
-
                             break;
 
                         case "receive":
@@ -198,28 +245,35 @@ namespace Rtmp.Net
 
                                 InternalReceiveSubscriptionValue(id, value, body);
                             }
-
                             break;
 
                         case "onstatus":
                             Kon.Trace("received status");
                             break;
 
-                        // [2016-12-26] workaround roslyn compiler bug that would cause the following default cause to
-                        // cause a nullreferenceexception on the owning switch statement.
-                        //     default:
-                        //         Kon.DebugRun(() =>
-                        //         {
-                        //             Kon.Trace("unknown rtmp invoke method requested", new { method = i.MethodName, args = i.Arguments });
-                        //             Debugger.Break();
-                        //         });
-                        //
-                        //         break;
+                        #region Server
+
+                        case "connect":
+                            Kon.Trace("received connect");
+                            if (i.Headers is AsObject o2)
+                                InternalReceiveConnect(o2);
+                            break;
+
+                        #endregion
 
                         default:
                             break;
+                            // [2016-12-26] workaround roslyn compiler bug that would cause the following default cause to
+                            // cause a nullreferenceexception on the owning switch statement.
+                            //     default:
+                            //         Kon.DebugRun(() =>
+                            //         {
+                            //             Kon.Trace("unknown rtmp invoke method requested", new { method = i.MethodName, args = i.Arguments });
+                            //             Debugger.Break();
+                            //         });
+                            //
+                            //         break;
                     }
-
                     break;
             }
         }
@@ -373,16 +427,18 @@ namespace Rtmp.Net
 
         #region (static) serverconnectasync
 
-        internal static async Task<RtmpClient> ServerConnectAsync(RtmpServer server, Options options, Stream stream)
+        internal static async Task<RtmpClient> ServerConnectAsync(RtmpServer server, Options options, Stream stream, EventHandler<ClientDisconnectedException> disconnected = null)
         {
-            Check.NotNull(options.Context);
+            Check.NotNull(server, options, options.Context, stream);
 
             var chunkLength = options.ChunkLength;
             var context = options.Context;
 
             await Handshake.ServerGoAsync(stream);
 
-            var client = new RtmpClient(context);
+            var client = new RtmpClient(server, options, context);
+            if (disconnected != null)
+                client.Disconnected += disconnected;
             var writer = new Writer(client, stream, context, client.token);
             var reader = new Reader(client, stream, context, client.token);
 
@@ -390,43 +446,9 @@ namespace Rtmp.Net
             writer.RunAsync(chunkLength).Forget();
 
             client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
-            //client.clientId = await RtmpServerConnectAsync(
-            //    client: client,
-            //    options: options);
 
             return client;
         }
-
-        // attempts to perform an rtmp connect, and returns the client id assigned to us (if any - this may be null)
-        //static async Task<string> RtmpServerConnectAsync(RtmpClient client, Options option)
-        //{
-        //    var request = new InvokeAmf0
-        //    {
-        //        InvokeId = client.NextInvokeId(),
-        //        MethodName = "connect",
-        //        Arguments = arguments ?? EmptyArray<object>.Instance,
-        //        Headers = new AsObject()
-        //        {
-        //            { "app",            appName          },
-        //            { "audioCodecs",    3575             },
-        //            { "capabilities",   239              },
-        //            { "flashVer",       flashVersion     },
-        //            { "fpad",           false            },
-        //            { "objectEncoding", (double)3        }, // currently hard-coded to amf3
-        //            { "pageUrl",        pageUrl          },
-        //            { "swfUrl",         swfUrl           },
-        //            { "tcUrl",          tcUrl            },
-        //            { "videoCodecs",    252              },
-        //            { "videoFunction",  1                },
-        //        },
-        //    };
-
-        //    var response = await client.InternalCallAsync(request, chunkStreamId: 3) as IDictionary<string, object>;
-
-        //    return response != null && (response.TryGetValue("clientId", out var clientId) || response.TryGetValue("id", out clientId))
-        //        ? clientId as string
-        //        : null;
-        //}
 
         #endregion
 
@@ -558,7 +580,6 @@ namespace Rtmp.Net
         {
             // currently we don't have a notion of gracefully closing a connection. all closes are hard force closes,
             // but we leave the possibility for properly implementing graceful closures in the future
-
             InternalCloseConnection("close-requested-by-user", null);
 
             return Task.CompletedTask;
@@ -1191,12 +1212,12 @@ namespace Rtmp.Net
                         DispatchMessage(message);
                     }
                 }
-
                 return true;
             }
 
             void DispatchMessage(RtmpMessage message)
             {
+                Kon.Trace($">> {message.GetType().Name}");
                 switch (message)
                 {
                     case ChunkLength chunk:
@@ -1228,7 +1249,6 @@ namespace Rtmp.Net
                             messages.Remove(key);
                             builder.Dispose();
                         }
-
                         break;
 
                     default:
@@ -1347,10 +1367,8 @@ namespace Rtmp.Net
                     Length = length;
                 }
 
-                public void Dispose()
-                {
+                public void Dispose() =>
                     ArrayPool<byte>.Shared.Return(Buffer);
-                }
 
                 public void AddData(Space<byte> source)
                 {
@@ -1388,19 +1406,17 @@ namespace Rtmp.Net
             // the current chunk length for this upstream connection. by the rtmp spec, this defaults to 128 bytes.
             int chunkLength = 128;
 
-
             public Writer(RtmpClient owner, Stream stream, SerializationContext context, CancellationToken cancellationToken)
             {
                 this.owner = owner;
                 this.stream = stream;
                 this.context = context;
 
-                this.token = cancellationToken;
-                this.reset = new AsyncAutoResetEvent();
-                this.queue = new ConcurrentQueue<Packet>();
-                this.streams = new KeyDictionary<int, ChunkStream.Snapshot>();
+                token = cancellationToken;
+                reset = new AsyncAutoResetEvent();
+                queue = new ConcurrentQueue<Packet>();
+                streams = new KeyDictionary<int, ChunkStream.Snapshot>();
             }
-
 
             public void QueueWrite(RtmpMessage message, int chunkStreamId, bool external = true)
             {
@@ -1411,7 +1427,6 @@ namespace Rtmp.Net
                 queue.Enqueue(new Packet(chunkStreamId, message.ContentType, Serialize(message)));
                 reset.Set();
             }
-
 
             // this method must only be called once
             public async Task RunAsync(int chunkLength)
@@ -1508,6 +1523,7 @@ namespace Rtmp.Net
 
                 var w = new AmfWriter(WriteInitialBufferLength, context);
 
+                Kon.Trace($"<< {message.ContentType} {(message as Invoke)?.MethodName}");
                 switch (message.ContentType)
                 {
                     case PacketContentType.SetChunkSize:

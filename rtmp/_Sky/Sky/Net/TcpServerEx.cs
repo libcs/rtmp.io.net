@@ -10,8 +10,8 @@ namespace Hina.Net
     {
         static async Task<IPAddress> GetAddressAsync(string host)
         {
-            if (host == null || string.Equals(host, "Any", StringComparison.OrdinalIgnoreCase)) return IPAddress.IPv6Any;
-            else if (string.Equals(host, "Anyv4", StringComparison.OrdinalIgnoreCase)) return IPAddress.Any;
+            if (host == null || string.Equals(host, "anyv6", StringComparison.OrdinalIgnoreCase)) return IPAddress.IPv6Any;
+            else if (string.Equals(host, "any", StringComparison.OrdinalIgnoreCase)) return IPAddress.Any;
             else return (await Dns.GetHostEntryAsync(host)).AddressList.FirstOrDefault();
         }
 

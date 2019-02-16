@@ -37,40 +37,36 @@ public static class test
 
     static async Task test_connect()
     {
-        var key = "";
+        var key = "live_48269693_OhemQ7S4gQy7y27byu47TRERxyzgLl";
         var context = new SerializationContext();
         var options = new RtmpClient.Options()
         {
             // required parameters:
-            //Url = "rtmp://ingress.winky.com:1234",
             Url = $"rtmp://live.twitch.tv/app/{key}",
             Context = context,
 
             // optional parameters:
-            AppName = "demo-app",                                  // optional app name, passed to the remote server during connect.
-            PageUrl = "https://example.com/rtmpsharp/demo.html",   // optional page url, passed to the remote server during connect.
-            //SwfUrl = "",                                          // optional swf url, passed to the remote server during connect.
-            //FlashVersion = "WIN 21,0,0,174",                            // optional flash version, paased to the remote server during connect.
+            AppName = "app",                            // optional app name, passed to the remote server during connect.
+            //PageUrl = "",                             // optional page url, passed to the remote server during connect.
+            //SwfUrl = "",                              // optional swf url, passed to the remote server during connect.
+            //FlashVersion = "WIN 21,0,0,174",          // optional flash version, paased to the remote server during connect.
 
-            //ChunkLength = 4192,                                        // optional outgoing rtmp chunk length.
+            //ChunkLength = 4192,                       // optional outgoing rtmp chunk length.
             //Validate = (sender, certificate, chain, errors) => true // optional certificate validation callback. used only in tls connections.
         };
 
         using (var client = await RtmpClient.ConnectAsync(options))
         {
-            //var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+            var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
         }
     }
 
-    static async Task test_connect2()
+    static async Task test_server()
     {
-        // route ADD 52.223.225.248 MASK 255.255.255.248 127.0.0.1
         var context = new SerializationContext();
         var options = new RtmpServer.Options()
         {
             // required parameters:
-            //Url = "rtmp://live-sea.twitch.tv/app/key",
-            //Url = "rtmp://anyv4",
             Context = context,
         };
 
@@ -78,29 +74,8 @@ public static class test
             server.Wait();
     }
 
-    static void RUN_TEST(string name, Action test_function)
-    {
-        Console.Write($"{name}\n");
-        //if (!InitializeRtmp())
-        //{
-        //    Console.Write("error: failed to initialize rtmp\n");
-        //    Environment.Exit(1);
-        //}
-        test_function();
-        //ShutdownRtmp();
-    }
-
-    static void RUN_TESTASYNC(string name, Func<Task> test_function)
-    {
-        Console.Write($"{name}\n");
-        //if (!InitializeRtmp())
-        //{
-        //    Console.Write("error: failed to initialize rtmp\n");
-        //    Environment.Exit(1);
-        //}
-        test_function().Wait();
-        //ShutdownRtmp();
-    }
+    static void RUN_TEST(string name, Action test_function) { Console.Write($"{name}\n"); test_function(); }
+    static void RUN_TESTASYNC(string name, Func<Task> test_function) { Console.Write($"{name}\n"); test_function().Wait(); }
 
 #if SOAK
     static volatile bool quit = false;
@@ -111,8 +86,6 @@ public static class test
     static int Main(string[] args)
     {
         Console.Write("\n");
-
-        //log_level(LOG_LEVEL_INFO);
 
 #if SOAK
         Console.CancelKeyPress += interrupt_handler;
@@ -125,7 +98,7 @@ public static class test
 
             //RUN_TEST("test_endian", test_endian);
             //RUN_TESTASYNC("test_connect", test_connect);
-            RUN_TESTASYNC("test_connect2", test_connect2);
+            RUN_TESTASYNC("test_server", test_server);
 
 #if SOAK
             if (quit)

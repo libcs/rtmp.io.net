@@ -154,8 +154,8 @@ namespace Rtmp
                     LocalName = property.Name;
                     Name = property.GetCustomAttribute<RtmpAttribute>(true)?.CanonicalName ?? LocalName;
 
-                    getValue = Helper.AccessProperty(property);
-                    setValue = Helper.AssignProperty(property);
+                    getValue = property.CanRead ? Helper.AccessProperty(property) : null;
+                    setValue = property.CanWrite ? Helper.AssignProperty(property) : null;
                     valueType = property.PropertyType;
                 }
 

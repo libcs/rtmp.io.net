@@ -119,12 +119,19 @@ namespace Rtmp.Net.RtmpMessages
 
     #region PeerBandwidth
 
+    public enum PeerBandwidthLimitType : byte
+    {
+        Hard = 0,
+        Soft = 1,
+        Dynamic = 2
+    }
+
     class PeerBandwidth : RtmpMessage
     {
         public int AckWindowSize;
-        public BandwithLimitType LimitType;
+        public PeerBandwidthLimitType LimitType;
 
-        public PeerBandwidth(int windowSize, BandwithLimitType type) : base(PacketContentType.SetPeerBandwith)
+        public PeerBandwidth(int windowSize, PeerBandwidthLimitType type) : base(PacketContentType.SetPeerBandwith)
         {
             AckWindowSize = windowSize;
             LimitType = type;
@@ -133,14 +140,7 @@ namespace Rtmp.Net.RtmpMessages
         public PeerBandwidth(int acknowledgementWindowSize, byte type) : base(PacketContentType.SetPeerBandwith)
         {
             AckWindowSize = acknowledgementWindowSize;
-            LimitType = (BandwithLimitType)type;
-        }
-
-        public enum BandwithLimitType : byte
-        {
-            Hard = 0,
-            Soft = 1,
-            Dynamic = 2
+            LimitType = (PeerBandwidthLimitType)type;
         }
     }
 
