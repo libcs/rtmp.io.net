@@ -60,7 +60,7 @@ namespace Rtmp.Net
         (string message, Exception inner) cause;
 
         // clients
-        List<(RtmpClient client, RtmpClient.Options options)> clients;
+        public Dictionary<string, (RtmpClient client, RtmpClient.Options options)> clients;
 
         RtmpServer(SerializationContext context, Options options)
         {
@@ -69,12 +69,15 @@ namespace Rtmp.Net
             callbacks = new TaskCallbackManager<uint, object>();
             source = new CancellationTokenSource();
             token = source.Token;
-            clients = new List<(RtmpClient client, RtmpClient.Options options)>();
+            clients = new Dictionary<string, (RtmpClient client, RtmpClient.Options options)>();
             Kon.Emit($"server started\n");
         }
 
-        public void Dispose() =>
-            CloseAsync(true).Wait();
+        public void Dispose()
+        {
+            if (!disconnected)
+                CloseAsync(true).Wait();
+        }
 
         #region internal callbacks
 
@@ -86,12 +89,13 @@ namespace Rtmp.Net
             Volatile.Write(ref cause.inner, inner);
             Volatile.Write(ref disconnected, true);
 
-            Task.WaitAll(clients.Select(x => x.client.CloseAsync()).ToArray());
+            Task.WaitAll(clients.Select(x => x.Value.client.CloseAsync()).ToArray());
 
             source.Cancel();
             callbacks.SetExceptionForAll(DisconnectedException());
 
             WrapCallback(() => Disconnected?.Invoke(this, DisconnectedException()));
+            Kon.Assert(clients.Count == 0);
         }
 
         // this method will never throw an exception unless that exception will be fatal to this server, and thus
@@ -150,15 +154,18 @@ namespace Rtmp.Net
             //
             public int WindowAcknowledgementSize = 2500000;
             public (int Bandwidth, PeerBandwidthLimitType LimitType) PeerBandwidth = (2500000, PeerBandwidthLimitType.Dynamic);
-            public int ChunkLength = 4192; //4096
+            public int ChunkLength = 4096;
         }
 
         static void DisconnectClient(object s, ClientDisconnectedException e)
         {
-            Kon.Trace("client disconnected");
             var client = (RtmpClient)s;
+            Kon.Trace($"client {client.clientId} disconnected");
             client.Disconnected -= DisconnectClient;
-            client.server.clients.RemoveAll(x => x.client == client);
+            var clients = client.server.clients;
+            foreach (var x in clients.Where(x => x.Value.client == client).ToList())
+                clients.Remove(x.Key);
+            //client.server.clients.RemoveAll(x => x.client == client);
         }
 
         public static async Task<RtmpServer> ConnectAsync(Options options, int max_clients = 5)
@@ -177,16 +184,17 @@ namespace Rtmp.Net
 
             server.RunAsync(tcpListener, async tcp =>
             {
-                Kon.Emit($"client connected from {tcp.Client.LocalEndPoint}\n");
+                var clientId = $"{server.NextInvokeId()}";
+                Kon.Emit($"client {clientId} connected from {tcp.Client.LocalEndPoint}\n");
                 var stream = await GetStreamAsync(uri, tcp.GetStream(), validate, serverCertificate);
                 var clientOptions = new RtmpClient.Options
                 {
                     ChunkLength = options.ChunkLength,
                     Context = options.Context,
                 };
-                var client = await RtmpClient.ServerConnectAsync(server, clientOptions, stream, DisconnectClient);
+                var client = await RtmpClient.ServerConnectAsync(server, clientOptions, stream, clientId, DisconnectClient);
                 Kon.Assert(server.clients.Count < max_clients);
-                server.clients.Add(item: (client, clientOptions));
+                server.clients.Add(clientId, (client, clientOptions));
             }).Forget();
 
             return server;

@@ -98,7 +98,7 @@ namespace Rtmp.Net
 
         // the client id that was assigned to us by the remote peer. this is assigned post-construction by
         // `connectasync`, and may be null if no explicit client id was provided.
-        string clientId;
+        internal string clientId;
 
         // counter for monotonically increasing invoke ids
         int invokeId;
@@ -123,8 +123,14 @@ namespace Rtmp.Net
             token = source.Token;
         }
 
-        public void Dispose() =>
-            CloseAsync(true).Wait();
+        public void Dispose()
+        {
+            if (!disconnected)
+                CloseAsync(true).Wait();
+        }
+
+        public override string ToString() =>
+            $"RtmpClient {clientId}";
 
         #region internal callbacks
 
@@ -136,6 +142,7 @@ namespace Rtmp.Net
         // `inner` may be null.
         void InternalCloseConnection(string reason, Exception inner)
         {
+            Kon.Trace($"InternalCloseConnection {clientId}");
             Volatile.Write(ref cause.message, reason);
             Volatile.Write(ref cause.inner, inner);
             Volatile.Write(ref disconnected, true);
@@ -147,7 +154,7 @@ namespace Rtmp.Net
         }
 
         // called in server connect
-        void InternalReceiveConnect(AsObject headers)
+        void InternalReceiveConnect(uint invokeId, AsObject headers)
         {
             bool ParseHeadersAndConnect()
             {
@@ -162,12 +169,22 @@ namespace Rtmp.Net
             Check.NotNull(options);
 
             if (!ParseHeadersAndConnect())
+            {
                 queue(new InvokeAmf0
                 {
-                    InvokeId = NextInvokeId(),
+                    InvokeId = 1,
                     MethodName = "_error",
-                    Arguments = new[] { $"unable to connect to {options.AppName}" }
+                    Arguments = new[] {
+                        $"unable to connect to {options.AppName}"
+                    },
+                    Headers = new AsObject {
+                        { "fmsVer", "FMS/3,5,7,7009" },
+                        { "capabilities", 31.0 },
+                        { "mode", 1.0 },
+                    }
                 }, 2);
+                return;
+            }
             var serverOptions = server.options;
             queue(new WindowAcknowledgementSize(serverOptions.WindowAcknowledgementSize), 2);
             queue(new PeerBandwidth(serverOptions.PeerBandwidth.Bandwidth, serverOptions.PeerBandwidth.LimitType), 2);
@@ -175,10 +192,31 @@ namespace Rtmp.Net
             queue(new ChunkLength(serverOptions.ChunkLength), 2);
             queue(new InvokeAmf0
             {
-                InvokeId = NextInvokeId(),
+                InvokeId = invokeId,
                 MethodName = "_result",
                 Arguments = new[] { new AsObject {
-                    { "clientId", clientId } } }
+                    { "clientId", clientId },
+                    { "level", "status" },
+                    { "code", "NetConnection.Connect.Success" },
+                    { "description", "Connection accepted." },
+                    { "data", new AsObject { { "string", "3,5,7,7009" } } },
+                    { "objectEncoding", 0.0 },
+                } },
+                Headers = new AsObject {
+                    { "fmsVer", "FMS/3,5,7,7009" },
+                    { "capabilities", 31.0 },
+                    { "mode", 1.0 },
+                }
+            }, 2);
+        }
+
+        void InternalReceiveCreateStream(uint invokeId)
+        {
+            queue(new InvokeAmf0
+            {
+                InvokeId = invokeId,
+                MethodName = "_result",
+                Arguments = new object[] { 1.0 },
             }, 2);
         }
 
@@ -251,15 +289,28 @@ namespace Rtmp.Net
                             Kon.Trace("received status");
                             break;
 
-                        #region Server
-
                         case "connect":
                             Kon.Trace("received connect");
-                            if (i.Headers is AsObject o2)
-                                InternalReceiveConnect(o2);
+                            Check.NotNull(server);
+                            if (i.Headers is AsObject headers)
+                                InternalReceiveConnect(i.InvokeId, headers);
                             break;
 
-                        #endregion
+                        case "createStream":
+                            Kon.Trace("received createStream");
+                            Check.NotNull(server);
+                            InternalReceiveCreateStream(i.InvokeId);
+                            break;
+
+                        //case "publish":
+                        //    Kon.Trace("received publish");
+                        //    Check.NotNull(server);
+                        //    break;
+
+                        case "FCUnpublish_":
+                            Kon.Trace("received FCUnpublish");
+                            InternalCloseConnection("close-requested-by-request", null);
+                            break;
 
                         default:
                             break;
@@ -335,7 +386,7 @@ namespace Rtmp.Net
             public RemoteCertificateValidationCallback Validate;
         }
 
-        public static async Task<RtmpClient> ConnectAsync(Options options)
+        public static async Task<RtmpClient> ConnectAsync(Options options, EventHandler<ClientDisconnectedException> disconnected = null)
         {
             Check.NotNull(options.Url, options.Context);
 
@@ -351,13 +402,16 @@ namespace Rtmp.Net
             await Handshake.GoAsync(stream);
 
             var client = new RtmpClient(context);
+            if (disconnected != null)
+                client.Disconnected += disconnected;
+            client.Disconnected += (s, e) => { stream.Dispose(); tcp.Dispose(); };
             var reader = new Reader(client, stream, context, client.token);
             var writer = new Writer(client, stream, context, client.token);
+            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
 
             reader.RunAsync().Forget();
             writer.RunAsync(chunkLength).Forget();
 
-            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
             client.clientId = await RtmpConnectAsync(
                 client: client,
                 appName: options.AppName,
@@ -427,25 +481,24 @@ namespace Rtmp.Net
 
         #region (static) serverconnectasync
 
-        internal static async Task<RtmpClient> ServerConnectAsync(RtmpServer server, Options options, Stream stream, EventHandler<ClientDisconnectedException> disconnected = null)
+        internal static async Task<RtmpClient> ServerConnectAsync(RtmpServer server, Options options, Stream stream, string clientId = null, EventHandler<ClientDisconnectedException> disconnected = null)
         {
             Check.NotNull(server, options, options.Context, stream);
 
-            var chunkLength = options.ChunkLength;
             var context = options.Context;
 
             await Handshake.ServerGoAsync(stream);
 
             var client = new RtmpClient(server, options, context);
+            client.clientId = clientId;
             if (disconnected != null)
                 client.Disconnected += disconnected;
             var writer = new Writer(client, stream, context, client.token);
             var reader = new Reader(client, stream, context, client.token);
+            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId, external: message.GetType() != typeof(ChunkLength));
 
             reader.RunAsync().Forget();
-            writer.RunAsync(chunkLength).Forget();
-
-            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
+            writer.RunAsync().Forget();
 
             return client;
         }
@@ -459,7 +512,7 @@ namespace Rtmp.Net
 
         public async Task<T> InvokeAsync<T>(string method, params object[] arguments) =>
             NanoTypeConverter.ConvertTo<T>(
-                await InternalCallAsync(new InvokeAmf0() { MethodName = method, Arguments = arguments, InvokeId = NextInvokeId() }, 3));
+                await InternalCallAsync(new InvokeAmf0 { MethodName = method, Arguments = arguments, InvokeId = NextInvokeId() }, 3));
 
         public async Task<T> InvokeAsync<T>(string endpoint, string destination, string method, params object[] arguments)
         {
@@ -467,7 +520,7 @@ namespace Rtmp.Net
             // decoding and don't have a way to specify amf0 encoding in this iteration of rtmpclient, so no check is
             // needed.
 
-            var request = new InvokeAmf3()
+            var request = new InvokeAmf3
             {
                 InvokeId = NextInvokeId(),
                 MethodName = null,
@@ -479,7 +532,7 @@ namespace Rtmp.Net
                         Destination = destination,
                         Operation   = method,
                         Body        = arguments,
-                        Headers     = new StaticDictionary<string, object>()
+                        Headers     = new StaticDictionary<string, object>
                         {
                             { FlexMessageHeaders.Endpoint,     endpoint },
                             { FlexMessageHeaders.FlexClientId, clientId ?? "nil" }
@@ -502,7 +555,7 @@ namespace Rtmp.Net
                 CorrelationId = null,
                 Operation = CommandMessage.Operations.Subscribe,
                 Destination = destination,
-                Headers = new StaticDictionary<string, object>()
+                Headers = new StaticDictionary<string, object>
                 {
                     { FlexMessageHeaders.Endpoint,     endpoint },
                     { FlexMessageHeaders.FlexClientId, clientId },
@@ -523,7 +576,7 @@ namespace Rtmp.Net
                 CorrelationId = null,
                 Operation = CommandMessage.Operations.Unsubscribe,
                 Destination = destination,
-                Headers = new KeyDictionary<string, object>()
+                Headers = new KeyDictionary<string, object>
                 {
                     { FlexMessageHeaders.Endpoint,     endpoint },
                     { FlexMessageHeaders.FlexClientId, clientId },
@@ -1127,10 +1180,17 @@ namespace Rtmp.Net
 
             async Task ReadFromStreamAsync()
             {
+                if (!stream.CanRead)
+                    throw new EndOfStreamException("rtmp connection was closed by the remote peer");
+
                 var read = await stream.ReadAsync(new Space<byte>(buffer, available), token);
 
                 if (read == 0)
-                    throw new EndOfStreamException("rtmp connection was closed by the remote peer");
+                {
+                    //throw new EndOfStreamException("rtmp connection was closed by the remote peer");
+                    owner.InternalCloseConnection("reader-closed", null);
+                    return;
+                }
 
                 available += read;
                 readTotal += read;
@@ -1429,7 +1489,7 @@ namespace Rtmp.Net
             }
 
             // this method must only be called once
-            public async Task RunAsync(int chunkLength)
+            public async Task RunAsync(int chunkLength = 0)
             {
                 if (chunkLength != 0)
                 {
@@ -1519,7 +1579,7 @@ namespace Rtmp.Net
                 //                       they're identical. we can use existing logic and add if statements to surround
                 //                       writing the invokeid + headers if needed.
 
-                const int WriteInitialBufferLength = 4192;
+                const int WriteInitialBufferLength = 4096; //: 4192
 
                 var w = new AmfWriter(WriteInitialBufferLength, context);
 
@@ -1528,7 +1588,7 @@ namespace Rtmp.Net
                 {
                     case PacketContentType.SetChunkSize:
                         var a = (ChunkLength)message;
-                        w.WriteInt32(a.Length);
+                        w.WriteInt32(chunkLength = a.Length);
                         break;
 
                     case PacketContentType.AbortMessage:

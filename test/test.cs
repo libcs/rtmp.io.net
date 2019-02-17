@@ -38,12 +38,11 @@ public static class test
     static async Task test_connect()
     {
         var key = "live_48269693_OhemQ7S4gQy7y27byu47TRERxyzgLl";
-        var context = new SerializationContext();
         var options = new RtmpClient.Options()
         {
             // required parameters:
             Url = $"rtmp://live.twitch.tv/app/{key}",
-            Context = context,
+            Context = new SerializationContext(),
 
             // optional parameters:
             AppName = "app",                            // optional app name, passed to the remote server during connect.
@@ -54,10 +53,11 @@ public static class test
             //ChunkLength = 4192,                       // optional outgoing rtmp chunk length.
             //Validate = (sender, certificate, chain, errors) => true // optional certificate validation callback. used only in tls connections.
         };
-
         using (var client = await RtmpClient.ConnectAsync(options))
         {
-            var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+            var createStream = await client.InvokeAsync<double>("createStream");
+
+            //var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
         }
     }
 
@@ -97,8 +97,8 @@ public static class test
             Console.Write("\n[rtmp]\n\n");
 
             //RUN_TEST("test_endian", test_endian);
-            //RUN_TESTASYNC("test_connect", test_connect);
-            RUN_TESTASYNC("test_server", test_server);
+            RUN_TESTASYNC("test_connect", test_connect);
+            //RUN_TESTASYNC("test_server", test_server);
 
 #if SOAK
             if (quit)
