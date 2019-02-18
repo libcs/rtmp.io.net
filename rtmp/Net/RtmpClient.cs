@@ -211,12 +211,12 @@ namespace Rtmp.Net
                 MethodName = "_result",
                 Arguments = new[] { new AsObject
                 {
-                    { "clientId", clientId },
                     { "level", "status" },
                     { "code", "NetConnection.Connect.Success" },
                     { "description", "Connection accepted." },
-                    { "objectEncoding", 0.0 },
                     { "data", new AsObject { { "string", "3,5,7,7009" } } },
+                    { "objectEncoding", 0.0 },
+                    { "clientId", clientId },
                 } },
                 //Arguments = new[] { new StatusAsObject(StatusAsObject.Codes.ConnectSuccess, "Connection accepted.", ObjectEncoding.Amf0)
                 //{

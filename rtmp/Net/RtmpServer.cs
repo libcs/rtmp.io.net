@@ -165,7 +165,25 @@ namespace Rtmp.Net
             var clients = client.server.clients;
             foreach (var x in clients.Where(x => x.Value.client == client).ToList())
                 clients.Remove(x.Key);
-            //client.server.clients.RemoveAll(x => x.client == client);
+        }
+
+        async Task ConnectClientAsync(TcpClient tcp, Uri uri, Options options, int max_clients)
+        {
+            var validate = options.Validate ?? ((sender, certificate, chain, errors) => true);
+            var serverCertificate = options.ServerCertificate;
+            var clientId = $"{NextInvokeId()}";
+            Kon.Emit($"client {clientId} connected from {tcp.Client.LocalEndPoint}\n");
+
+            var stream = await GetStreamAsync(uri, tcp.GetStream(), validate, serverCertificate);
+            var clientOptions = new RtmpClient.Options
+            {
+                ChunkLength = options.ChunkLength,
+                Context = options.Context,
+            };
+            var client = await RtmpClient.ServerConnectAsync(this, clientOptions, stream, clientId, DisconnectClient);
+
+            Kon.Assert(clients.Count < max_clients);
+            clients.Add(clientId, (client, clientOptions));
         }
 
         public static async Task<RtmpServer> ConnectAsync(Options options, int max_clients = 5)
@@ -173,29 +191,14 @@ namespace Rtmp.Net
             Check.NotNull(options, options.Context);
 
             var url = options.Url ?? "rtmp://any";
-            var chunkLength = options.ChunkLength;
             var context = options.Context;
-            var validate = options.Validate ?? ((sender, certificate, chain, errors) => true);
-            var serverCertificate = options.ServerCertificate;
 
             var uri = new Uri(url);
             var tcpListener = await TcpListenerEx.AcceptClientAsync(uri.Host, uri.Port != -1 ? uri.Port : DefaultPort);
+
             var server = new RtmpServer(context, options);
 
-            server.RunAsync(tcpListener, async tcp =>
-            {
-                var clientId = $"{server.NextInvokeId()}";
-                Kon.Emit($"client {clientId} connected from {tcp.Client.LocalEndPoint}\n");
-                var stream = await GetStreamAsync(uri, tcp.GetStream(), validate, serverCertificate);
-                var clientOptions = new RtmpClient.Options
-                {
-                    ChunkLength = options.ChunkLength,
-                    Context = options.Context,
-                };
-                var client = await RtmpClient.ServerConnectAsync(server, clientOptions, stream, clientId, DisconnectClient);
-                Kon.Assert(server.clients.Count < max_clients);
-                server.clients.Add(clientId, (client, clientOptions));
-            }).Forget();
+            server.RunAsync(tcpListener, async tcp => await server.ConnectClientAsync(tcp, uri, options, max_clients)).Forget();
 
             return server;
         }
