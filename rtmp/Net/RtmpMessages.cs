@@ -7,9 +7,10 @@ namespace Rtmp.Net.RtmpMessages
 
     abstract class RtmpMessage
     {
-        public PacketContentType ContentType;
+        public readonly uint StreamId;
+        public readonly PacketContentType ContentType;
 
-        protected RtmpMessage(PacketContentType contentType) => ContentType = contentType;
+        protected RtmpMessage(uint streamId, PacketContentType contentType) { StreamId = streamId; ContentType = contentType; }
     }
 
     #endregion
@@ -18,9 +19,9 @@ namespace Rtmp.Net.RtmpMessages
 
     class Abort : RtmpMessage
     {
-        public int ChunkStreamId;
+        public readonly int ChunkStreamId;
 
-        public Abort(int chunkStreamId) : base(PacketContentType.AbortMessage) =>
+        public Abort(uint streamId, int chunkStreamId) : base(streamId, PacketContentType.AbortMessage) =>
             ChunkStreamId = chunkStreamId;
     }
 
@@ -30,9 +31,9 @@ namespace Rtmp.Net.RtmpMessages
 
     class Acknowledgement : RtmpMessage
     {
-        public uint TotalRead;
+        public readonly uint TotalRead;
 
-        public Acknowledgement(uint read) : base(PacketContentType.Acknowledgement) =>
+        public Acknowledgement(uint read) : base(0U, PacketContentType.Acknowledgement) =>
             TotalRead = read;
     }
 
@@ -42,20 +43,20 @@ namespace Rtmp.Net.RtmpMessages
 
     abstract class ByteData : RtmpMessage
     {
-        public byte[] Data;
+        public readonly byte[] Data;
 
-        protected ByteData(byte[] data, PacketContentType type) : base(type) =>
+        protected ByteData(uint streamId, byte[] data, PacketContentType type) : base(streamId, type) =>
             Data = data;
     }
 
     class AudioData : ByteData
     {
-        public AudioData(byte[] data) : base(data, PacketContentType.Audio) { }
+        public AudioData(uint streamId, byte[] data) : base(streamId, data, PacketContentType.Audio) { }
     }
 
     class VideoData : ByteData
     {
-        public VideoData(byte[] data) : base(data, PacketContentType.Video) { }
+        public VideoData(uint streamId, byte[] data) : base(streamId, data, PacketContentType.Video) { }
     }
 
     #endregion
@@ -64,9 +65,9 @@ namespace Rtmp.Net.RtmpMessages
 
     class ChunkLength : RtmpMessage
     {
-        public int Length;
+        public readonly int Length;
 
-        public ChunkLength(int length) : base(PacketContentType.SetChunkSize) =>
+        public ChunkLength(int length) : base(0U, PacketContentType.SetChunkSize) =>
             Length = length > 0xFFFFFF ? 0xFFFFFF : length;
     }
 
@@ -81,17 +82,17 @@ namespace Rtmp.Net.RtmpMessages
         public uint InvokeId;
         public object Headers;
 
-        public Invoke(PacketContentType type) : base(type) { }
+        internal Invoke(uint streamId, PacketContentType type) : base(streamId, type) { }
     }
 
     class InvokeAmf0 : Invoke
     {
-        public InvokeAmf0() : base(PacketContentType.CommandAmf0) { }
+        public InvokeAmf0(uint streamId) : base(streamId, PacketContentType.CommandAmf0) { }
     }
 
     class InvokeAmf3 : Invoke
     {
-        public InvokeAmf3() : base(PacketContentType.CommandAmf3) { }
+        public InvokeAmf3(uint streamId) : base(streamId, PacketContentType.CommandAmf3) { }
     }
 
     #endregion
@@ -102,17 +103,38 @@ namespace Rtmp.Net.RtmpMessages
     {
         public object Data;
 
-        protected Notify(PacketContentType type) : base(type) { }
+        internal Notify(uint streamId, PacketContentType type) : base(streamId, type) { }
     }
 
     class NotifyAmf0 : Notify
     {
-        public NotifyAmf0() : base(PacketContentType.DataAmf0) { }
+        public NotifyAmf0(uint streamId) : base(streamId, PacketContentType.DataAmf0) { }
     }
 
     class NotifyAmf3 : Notify
     {
-        public NotifyAmf3() : base(PacketContentType.DataAmf3) { }
+        public NotifyAmf3(uint streamId) : base(streamId, PacketContentType.DataAmf3) { }
+    }
+
+    #endregion
+
+    #region SharedObject
+
+    class SharedObject : RtmpMessage
+    {
+        public object Data;
+
+        internal SharedObject(uint streamId, PacketContentType type) : base(streamId, type) { }
+    }
+
+    class SharedObjectAmf0 : SharedObject
+    {
+        public SharedObjectAmf0(uint streamId) : base(streamId, PacketContentType.SharedObjectAmf0) { }
+    }
+
+    class SharedObjectAmf3 : SharedObject
+    {
+        public SharedObjectAmf3(uint streamId) : base(streamId, PacketContentType.SharedObjectAmf3) { }
     }
 
     #endregion
@@ -128,16 +150,16 @@ namespace Rtmp.Net.RtmpMessages
 
     class PeerBandwidth : RtmpMessage
     {
-        public int AckWindowSize;
-        public PeerBandwidthLimitType LimitType;
+        public readonly int AckWindowSize;
+        public readonly PeerBandwidthLimitType LimitType;
 
-        public PeerBandwidth(int windowSize, PeerBandwidthLimitType type) : base(PacketContentType.SetPeerBandwith)
+        public PeerBandwidth(int windowSize, PeerBandwidthLimitType type) : base(0U, PacketContentType.SetPeerBandwith)
         {
             AckWindowSize = windowSize;
             LimitType = type;
         }
 
-        public PeerBandwidth(int acknowledgementWindowSize, byte type) : base(PacketContentType.SetPeerBandwith)
+        public PeerBandwidth(int acknowledgementWindowSize, byte type) : base(0U, PacketContentType.SetPeerBandwith)
         {
             AckWindowSize = acknowledgementWindowSize;
             LimitType = (PeerBandwidthLimitType)type;
@@ -150,10 +172,10 @@ namespace Rtmp.Net.RtmpMessages
 
     class UserControlMessage : RtmpMessage
     {
-        public Type EventType;
-        public uint[] Values;
+        public readonly Type EventType;
+        public readonly uint[] Values;
 
-        public UserControlMessage(Type type, uint[] values) : base(PacketContentType.UserControlMessage)
+        public UserControlMessage(Type type, uint[] values) : base(0U, PacketContentType.UserControlMessage)
         {
             EventType = type;
             Values = values;
@@ -183,9 +205,9 @@ namespace Rtmp.Net.RtmpMessages
         // sent, or from the beginning of the session if no Acknowledgement has yet been
         // sent
         // """
-        public int Count;
+        public readonly int Count;
 
-        public WindowAcknowledgementSize(int count) : base(PacketContentType.WindowAcknowledgementSize) =>
+        public WindowAcknowledgementSize(int count) : base(0U, PacketContentType.WindowAcknowledgementSize) =>
             Count = count;
     }
 

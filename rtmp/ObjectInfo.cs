@@ -154,8 +154,8 @@ namespace Rtmp
                     LocalName = property.Name;
                     Name = property.GetCustomAttribute<RtmpAttribute>(true)?.CanonicalName ?? LocalName;
 
-                    getValue = property.CanRead ? Helper.AccessProperty(property) : null;
-                    setValue = property.CanWrite ? Helper.AssignProperty(property) : null;
+                    getValue = Helper.AccessProperty(property);
+                    setValue = Helper.AssignProperty(property);
                     valueType = property.PropertyType;
                 }
 
@@ -219,6 +219,8 @@ namespace Rtmp
 
                 public static Action<object, object> AssignProperty(PropertyInfo property)
                 {
+                    if (!property.CanWrite)
+                        return null;
                     var instance = Expression.Parameter(typeof(object));
                     var value = Expression.Parameter(typeof(object));
                     var assign = Expression.Assign(
@@ -232,6 +234,8 @@ namespace Rtmp
 
                 public static Func<object, object> AccessProperty(PropertyInfo property)
                 {
+                    if (!property.CanRead)
+                        return null;
                     var instance = Expression.Parameter(typeof(object));
                     var access = Expression.Convert(
                         Expression.Property(

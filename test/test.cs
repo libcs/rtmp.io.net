@@ -3,6 +3,7 @@ using Rtmp;
 using Rtmp.Net;
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 public static class test
@@ -38,7 +39,7 @@ public static class test
     static async Task test_connect()
     {
         var key = "live_48269693_OhemQ7S4gQy7y27byu47TRERxyzgLl";
-        var options = new RtmpClient.Options()
+        var options = new RtmpClient.Options
         {
             // required parameters:
             Url = $"rtmp://live.twitch.tv/app/{key}",
@@ -55,9 +56,9 @@ public static class test
         };
         using (var client = await RtmpClient.ConnectAsync(options))
         {
-            var createStream = await client.InvokeAsync<double>("createStream");
-
             //var exists = await client.InvokeAsync<bool>("storage", "exists", new { name = "music.pdf" });
+            var createStream = await client.Connection.CreateStreamAsync();
+            await createStream.PublishAndWaitAsync(key, "live");
         }
     }
 

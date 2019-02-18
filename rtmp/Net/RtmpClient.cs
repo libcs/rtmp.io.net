@@ -1,4 +1,5 @@
-﻿using Hina;
+﻿//#define DEBUG_STREAM
+using Hina;
 using Hina.Collections;
 using Hina.IO;
 using Hina.Linq;
@@ -60,6 +61,15 @@ namespace Rtmp.Net
 
     #endregion
 
+    #region RtmpClientWaitOn
+
+    public enum RtmpClientWaitOn : byte
+    {
+        Status = 1,
+    }
+
+    #endregion
+
     #region RtmpClient
 
     static class Ts
@@ -109,6 +119,9 @@ namespace Rtmp.Net
         // a tuple describing the cause of the disconnection. either value may be null.
         (string message, Exception inner) cause;
 
+        // a dictonary of events to wait on
+        IDictionary<(uint streamId, RtmpClientWaitOn waitOn), ManualResetEventSlim> waits;
+
         RtmpClient(RtmpServer server, Options options, SerializationContext context)
             : this(context)
         {
@@ -121,6 +134,8 @@ namespace Rtmp.Net
             callbacks = new TaskCallbackManager<uint, object>();
             source = new CancellationTokenSource();
             token = source.Token;
+            waits = new KeyDictionary<(uint streamId, RtmpClientWaitOn waitOn), ManualResetEventSlim>();
+            Connection = new NetConnection(this);
         }
 
         public void Dispose()
@@ -170,9 +185,9 @@ namespace Rtmp.Net
 
             if (!ParseHeadersAndConnect())
             {
-                queue(new InvokeAmf0
+                queue(new InvokeAmf0(0U)
                 {
-                    InvokeId = 1,
+                    InvokeId = invokeId,
                     MethodName = "_error",
                     Arguments = new[] {
                         $"unable to connect to {options.AppName}"
@@ -190,19 +205,26 @@ namespace Rtmp.Net
             queue(new PeerBandwidth(serverOptions.PeerBandwidth.Bandwidth, serverOptions.PeerBandwidth.LimitType), 2);
             queue(new UserControlMessage(UserControlMessage.Type.StreamBegin, new[] { 0U }), 2);
             queue(new ChunkLength(serverOptions.ChunkLength), 2);
-            queue(new InvokeAmf0
+            queue(new InvokeAmf0(0U)
             {
                 InvokeId = invokeId,
                 MethodName = "_result",
-                Arguments = new[] { new AsObject {
+                Arguments = new[] { new AsObject
+                {
                     { "clientId", clientId },
                     { "level", "status" },
                     { "code", "NetConnection.Connect.Success" },
                     { "description", "Connection accepted." },
-                    { "data", new AsObject { { "string", "3,5,7,7009" } } },
                     { "objectEncoding", 0.0 },
+                    { "data", new AsObject { { "string", "3,5,7,7009" } } },
                 } },
-                Headers = new AsObject {
+                //Arguments = new[] { new StatusAsObject(StatusAsObject.Codes.ConnectSuccess, "Connection accepted.", ObjectEncoding.Amf0)
+                //{
+                //    { "data", new AsObject { { "string", "3,5,7,7009" } } },
+                //    { "clientId", clientId },
+                //}},
+                Headers = new AsObject
+                {
                     { "fmsVer", "FMS/3,5,7,7009" },
                     { "capabilities", 31.0 },
                     { "mode", 1.0 },
@@ -212,12 +234,28 @@ namespace Rtmp.Net
 
         void InternalReceiveCreateStream(uint invokeId)
         {
-            queue(new InvokeAmf0
+            queue(new InvokeAmf0(0U)
             {
                 InvokeId = invokeId,
                 MethodName = "_result",
-                Arguments = new object[] { 1.0 },
+                Arguments = new[] { (object)1U },
             }, 2);
+            queue(new UserControlMessage(UserControlMessage.Type.StreamBegin, new[] { 1U }), 2);
+        }
+
+        void InternalReceivePublish(uint invokeId, uint streamId)
+        {
+            queue(new InvokeAmf0(streamId)
+            {
+                InvokeId = invokeId,
+                MethodName = "_result",
+            }, 3);
+            var name = "live_name";
+            queue(new InvokeAmf0(streamId)
+            {
+                MethodName = "onStatus",
+                Arguments = new[] { new StatusAsObject(StatusAsObject.Codes.PublishStart, $"Publishing {name}.") }
+            }, 3);
         }
 
         // this method will never throw an exception unless that exception will be fatal to this connection, and thus
@@ -227,14 +265,16 @@ namespace Rtmp.Net
             switch (message)
             {
                 case UserControlMessage u when u.EventType == UserControlMessage.Type.PingRequest:
-                    Kon.Trace("PingRequest");
                     queue(new UserControlMessage(UserControlMessage.Type.PingResponse, u.Values), 2);
+                    break;
+
+                case UserControlMessage u:
+                    //Console.WriteLine($"USERCONTROLMESSAGE: {u.ContentType}");
                     break;
 
                 case Invoke i:
                     var param = i.Arguments?.FirstOrDefault();
 
-                    Kon.Trace($"INVOKE:{i.MethodName}");
                     switch (i.MethodName)
                     {
                         case "_result":
@@ -285,8 +325,13 @@ namespace Rtmp.Net
                             }
                             break;
 
-                        case "onstatus":
+                        case "onStatus":
                             Kon.Trace("received status");
+                            var waitKey = (i.StreamId, RtmpClientWaitOn.Status);
+                            if (!waits.TryGetValue(waitKey, out var wait))
+                                break;
+                            waits.Remove(waitKey);
+                            wait.Set();
                             break;
 
                         case "connect":
@@ -302,10 +347,11 @@ namespace Rtmp.Net
                             InternalReceiveCreateStream(i.InvokeId);
                             break;
 
-                        //case "publish":
-                        //    Kon.Trace("received publish");
-                        //    Check.NotNull(server);
-                        //    break;
+                        case "publish":
+                            Kon.Trace("received publish");
+                            Check.NotNull(server);
+                            InternalReceivePublish(i.InvokeId, i.StreamId);
+                            break;
 
                         case "FCUnpublish_":
                             Kon.Trace("received FCUnpublish");
@@ -346,6 +392,13 @@ namespace Rtmp.Net
 
             queue(request, chunkStreamId);
             return task;
+        }
+
+        void InternalExec(Invoke request, int chunkStreamId)
+        {
+            if (disconnected) throw DisconnectedException();
+
+            queue(request, chunkStreamId);
         }
 
         void WrapCallback(Action action)
@@ -407,7 +460,9 @@ namespace Rtmp.Net
             client.Disconnected += (s, e) => { stream.Dispose(); tcp.Dispose(); };
             var reader = new Reader(client, stream, context, client.token);
             var writer = new Writer(client, stream, context, client.token);
-            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId);
+
+            client.queue = (message, chunkStreamId) =>
+                writer.QueueWrite(message, chunkStreamId);
 
             reader.RunAsync().Forget();
             writer.RunAsync(chunkLength).Forget();
@@ -449,12 +504,12 @@ namespace Rtmp.Net
         // attempts to perform an rtmp connect, and returns the client id assigned to us (if any - this may be null)
         static async Task<string> RtmpConnectAsync(RtmpClient client, string appName, string pageUrl, string swfUrl, string tcUrl, string flashVersion, object[] arguments)
         {
-            var request = new InvokeAmf0
+            var request = new InvokeAmf0(0U)
             {
                 InvokeId = client.NextInvokeId(),
                 MethodName = "connect",
                 Arguments = arguments ?? EmptyArray<object>.Instance,
-                Headers = new AsObject()
+                Headers = new AsObject
                 {
                     { "app",            appName          },
                     { "audioCodecs",    3575             },
@@ -489,13 +544,17 @@ namespace Rtmp.Net
 
             await Handshake.ServerGoAsync(stream);
 
-            var client = new RtmpClient(server, options, context);
-            client.clientId = clientId;
+            var client = new RtmpClient(server, options, context)
+            {
+                clientId = clientId
+            };
             if (disconnected != null)
                 client.Disconnected += disconnected;
             var writer = new Writer(client, stream, context, client.token);
             var reader = new Reader(client, stream, context, client.token);
-            client.queue = (message, chunkStreamId) => writer.QueueWrite(message, chunkStreamId, external: message.GetType() != typeof(ChunkLength));
+
+            client.queue = (message, chunkStreamId) =>
+                writer.QueueWrite(message, chunkStreamId, external: message.GetType() != typeof(ChunkLength));
 
             reader.RunAsync().Forget();
             writer.RunAsync().Forget();
@@ -512,7 +571,29 @@ namespace Rtmp.Net
 
         public async Task<T> InvokeAsync<T>(string method, params object[] arguments) =>
             NanoTypeConverter.ConvertTo<T>(
-                await InternalCallAsync(new InvokeAmf0 { MethodName = method, Arguments = arguments, InvokeId = NextInvokeId() }, 3));
+                await InternalCallAsync(new InvokeAmf0(0U)
+                {
+                    InvokeId = NextInvokeId(),
+                    MethodName = method,
+                    Arguments = arguments
+                }, 3));
+
+        public async Task<T> InvokeAsyncOnStream<T>(uint streamId, string method, params object[] arguments) =>
+            NanoTypeConverter.ConvertTo<T>(
+                await InternalCallAsync(new InvokeAmf0(streamId)
+                {
+                    InvokeId = NextInvokeId(),
+                    MethodName = method,
+                    Arguments = arguments
+                }, 3));
+
+        public void ExecuteOnStream(int chunkStreamId, uint streamId, string method, params object[] arguments) =>
+            InternalExec(new InvokeAmf0(streamId)
+            {
+                InvokeId = 0,
+                MethodName = method,
+                Arguments = arguments
+            }, chunkStreamId);
 
         public async Task<T> InvokeAsync<T>(string endpoint, string destination, string method, params object[] arguments)
         {
@@ -520,7 +601,7 @@ namespace Rtmp.Net
             // decoding and don't have a way to specify amf0 encoding in this iteration of rtmpclient, so no check is
             // needed.
 
-            var request = new InvokeAmf3
+            var request = new InvokeAmf3(0U)
             {
                 InvokeId = NextInvokeId(),
                 MethodName = null,
@@ -627,7 +708,49 @@ namespace Rtmp.Net
             return InvokeAsync<object>(null, message);
         }
 
+        public readonly NetConnection Connection;
+
+        public class NetConnection
+        {
+            readonly RtmpClient client;
+            public NetConnection(RtmpClient client) => this.client = client;
+
+            public Task CallAsync() => throw new NotImplementedException();
+            public Task CloseAsync() => throw new NotImplementedException();
+            public async Task<NetStream> CreateStreamAsync() => new NetStream(client, await client.InvokeAsync<uint>("createStream"));
+        }
+
+        public class NetStream
+        {
+            readonly RtmpClient client;
+            readonly uint streamId;
+            public NetStream(RtmpClient client, uint streamId)
+            {
+                this.client = client;
+                this.streamId = streamId;
+            }
+
+            public void Play() => throw new NotImplementedException();
+            public void Play2() => throw new NotImplementedException();
+            public void DeleteStream() => client.ExecuteOnStream(5, streamId, "deleteStream", streamId);
+            public void ReceiveAudio(bool receiveAudio) => client.ExecuteOnStream(5, streamId, "receiveAudio", receiveAudio);
+            public void ReceiveVideo(bool receiveVideo) => client.ExecuteOnStream(5, streamId, "receiveVideo", receiveVideo);
+            public void Publish(params object[] arguments) => client.ExecuteOnStream(5, streamId, "publish", arguments);
+            public Task PublishAndWaitAsync(params object[] arguments) { var r = client.WaitAsync(streamId, RtmpClientWaitOn.Status); Publish(arguments); return r; }
+            public Task SeekAsync() => throw new NotImplementedException();
+            public Task PauseAsync() => throw new NotImplementedException();
+            public Task WaitAsync(RtmpClientWaitOn waitOn) => client.WaitAsync(streamId, waitOn);
+        }
+
         #endregion
+
+        public Task WaitAsync(uint streamId, RtmpClientWaitOn waitOn)
+        {
+            var waitKey = (streamId, waitOn);
+            if (!waits.TryGetValue(waitKey, out var wait))
+                waits[waitKey] = wait = new ManualResetEventSlim();
+            return Task.Run(() => wait.WaitHandle.WaitOne());
+        }
 
         public Task CloseAsync(bool forced = false)
         {
@@ -966,7 +1089,6 @@ namespace Rtmp.Net
                     next.MessageLength != 0,
                     "message length cannot be zero");
 
-
                 var header = GetInitialHeaderType();
 
                 for (var i = 0; i < next.MessageLength; i += chunkLength)
@@ -977,16 +1099,13 @@ namespace Rtmp.Net
                         MessageHeader.WriteTo(writer, header, next);
                     }
                     else
-                    {
                         BasicHeader.WriteTo(writer, (byte)MessageHeader.Type.Type3, next.ChunkStreamId);
-                    }
 
                     var count = Math.Min(chunkLength, next.MessageLength - i);
                     var slice = message.Slice(i, count);
 
                     writer.WriteBytes(slice);
                 }
-
 
                 MessageHeader.Type GetInitialHeaderType()
                 {
@@ -1022,18 +1141,14 @@ namespace Rtmp.Net
                 }
             }
 
-            public static bool ReadFrom2(AmfReader reader, Snapshot previous, MessageHeader.Type opaque, out Snapshot next)
-            {
-                return MessageHeader.ReadFrom(reader, opaque, previous, out next);
-            }
-
+            public static bool ReadFrom2(AmfReader reader, Snapshot previous, MessageHeader.Type opaque, out Snapshot next) =>
+                MessageHeader.ReadFrom(reader, opaque, previous, out next);
 
             // a point-in-time snapshot of some chunk stream, including the currently packet in transit
             public struct Snapshot
             {
                 // if false, the value of this object is semantically equivalent to `null`
                 public bool Ready;
-
 
                 // * * * * * * * * * *
                 // chunk stream values
@@ -1044,13 +1159,11 @@ namespace Rtmp.Net
                 // the current timestamp for this chunk stream
                 public uint Timestamp;
 
-
                 // * * * * * * * * * *
                 // message stream values
 
                 // message stream id
                 public uint MessageStreamId;
-
 
                 // * * * * * * * * * *
                 // current message values
@@ -1060,7 +1173,6 @@ namespace Rtmp.Net
 
                 // size of the last chunk, in bytes, of the message currently being transmitted
                 public int MessageLength;
-
 
                 // * * * * * * * * * *
                 // methods
@@ -1222,13 +1334,11 @@ namespace Rtmp.Net
                     {
                         fixed (byte* pSource = &buffer[index])
                         fixed (byte* pDestination = &buffer[0])
-                        {
                             Buffer.MemoryCopy(
                                 source: pSource,
                                 destination: pDestination,
                                 destinationSizeInBytes: buffer.Length,
                                 sourceBytesToCopy: available - index);
-                        }
                     }
 
                     available -= index;
@@ -1241,7 +1351,7 @@ namespace Rtmp.Net
                     return false;
 
                 if (!streams.TryGetValue(streamId, out var previous))
-                    previous = new ChunkStream.Snapshot() { ChunkStreamId = streamId };
+                    previous = new ChunkStream.Snapshot { ChunkStreamId = streamId };
 
                 if (!ChunkStream.ReadFrom2(reader, previous, opaque, out var next))
                     return false;
@@ -1253,6 +1363,7 @@ namespace Rtmp.Net
                 var builder = messages.TryGetValue(key, out var packet) ? packet : messages[key] = new Builder(next.MessageLength);
                 var length = Math.Min(chunkLength, builder.Remaining);
 
+                //Console.WriteLine($"ReadSingleFrame: {next.ChunkStreamId} {next.MessageStreamId} : {next.ContentType}");
                 if (!reader.HasLength(length))
                     return false;
 
@@ -1268,7 +1379,7 @@ namespace Rtmp.Net
                         var dereader = __readSingleFrameReader;
                         dereader.Rebind(builder.Span);
 
-                        var message = Deserialize(next.ContentType, dereader);
+                        var message = Deserialize(next.MessageStreamId, next.ContentType, dereader);
                         DispatchMessage(message);
                     }
                 }
@@ -1277,7 +1388,9 @@ namespace Rtmp.Net
 
             void DispatchMessage(RtmpMessage message)
             {
-                Kon.Trace($">> {message.GetType().Name}");
+#if DEBUG_STREAM
+                Kon.Trace($">> {message.StreamId}:{message.GetType().Name} {(message is Invoke ? ((Invoke)message).MethodName : null)}");
+#endif
                 switch (message)
                 {
                     case ChunkLength chunk:
@@ -1317,8 +1430,7 @@ namespace Rtmp.Net
                 }
             }
 
-            // todo: refactor
-            RtmpMessage Deserialize(PacketContentType contentType, AmfReader r)
+            RtmpMessage Deserialize(uint streamId, PacketContentType contentType, AmfReader r)
             {
                 // (this comment must be kept in sync at rtmpclient.reader.cs and rtmpclient.writer.cs)
                 //
@@ -1331,7 +1443,7 @@ namespace Rtmp.Net
                 //                       generate an invoke id for it, and it does not contain headers. other than that,
                 //                       they're identical. we can use existing logic and add if statements to surround
                 //                       writing the invokeid + headers if needed.
-
+                ObjectEncoding encoding;
                 switch (contentType)
                 {
                     case PacketContentType.SetChunkSize:
@@ -1339,7 +1451,7 @@ namespace Rtmp.Net
                             length: r.ReadInt32());
 
                     case PacketContentType.AbortMessage:
-                        return new Abort(
+                        return new Abort(streamId,
                             chunkStreamId: r.ReadInt32());
 
                     case PacketContentType.Acknowledgement:
@@ -1364,31 +1476,37 @@ namespace Rtmp.Net
                             type: r.ReadByte());
 
                     case PacketContentType.Audio:
-                        return new AudioData(
+                        return new AudioData(streamId,
                             r.ReadBytes(r.Remaining));
 
                     case PacketContentType.Video:
-                        return new VideoData(
+                        return new VideoData(streamId,
                             r.ReadBytes(r.Remaining));
 
                     case PacketContentType.DataAmf0:
-                        throw NotSupportedException("data-amf0");
+                        //throw NotSupportedException("data-amf0"); //: guess
+                        return ReadCommand(1, streamId, ObjectEncoding.Amf0, contentType, r);
 
                     case PacketContentType.SharedObjectAmf0:
-                        throw NotSupportedException("sharedobject-amf0");
+                        //throw NotSupportedException("sharedobject-amf0"); //: guess
+                        return ReadCommand(2, streamId, ObjectEncoding.Amf0, contentType, r);
 
                     case PacketContentType.CommandAmf0:
-                        return ReadCommand(ObjectEncoding.Amf0, contentType, r);
+                        return ReadCommand(0, streamId, ObjectEncoding.Amf0, contentType, r);
 
                     case PacketContentType.DataAmf3:
-                        throw NotSupportedException("data-amf3");
+                        //throw NotSupportedException("data-amf3"); //: guess
+                        encoding = (ObjectEncoding)r.ReadByte();
+                        return ReadCommand(1, streamId, encoding, contentType, r);
 
                     case PacketContentType.SharedObjectAmf3:
-                        throw NotSupportedException("sharedobject-amf0");
+                        //throw NotSupportedException("sharedobject-amf0"); //: guess
+                        encoding = (ObjectEncoding)r.ReadByte();
+                        return ReadCommand(2, streamId, encoding, contentType, r);
 
                     case PacketContentType.CommandAmf3:
-                        var encoding = (ObjectEncoding)r.ReadByte();
-                        return ReadCommand(encoding, contentType, r);
+                        encoding = (ObjectEncoding)r.ReadByte();
+                        return ReadCommand(0, streamId, encoding, contentType, r);
 
                     case PacketContentType.Aggregate:
                         throw NotSupportedException("aggregate");
@@ -1398,18 +1516,39 @@ namespace Rtmp.Net
                 }
             }
 
-            static RtmpMessage ReadCommand(ObjectEncoding encoding, PacketContentType type, AmfReader r)
+            static RtmpMessage ReadCommand(byte message, uint streamId, ObjectEncoding encoding, PacketContentType type, AmfReader r)
             {
-                var name = (string)r.ReadAmfObject(encoding);
-                var invokeId = Convert.ToUInt32(r.ReadAmfObject(encoding));
-                var headers = r.ReadAmfObject(encoding);
+                switch (message)
+                {
+                    case 0:
+                        {
+                            var name = (string)r.ReadAmfObject(encoding);
+                            var invokeId = Convert.ToUInt32(r.ReadAmfObject(encoding));
+                            var headers = r.ReadAmfObject(encoding);
 
-                var args = new List<object>();
+                            var args = new List<object>();
 
-                while (r.Remaining > 0)
-                    args.Add(r.ReadAmfObject(encoding));
+                            while (r.Remaining > 0)
+                                args.Add(r.ReadAmfObject(encoding));
 
-                return new Invoke(type) { MethodName = name, Arguments = args.ToArray(), InvokeId = invokeId, Headers = headers };
+                            return new Invoke(streamId, type) { MethodName = name, Arguments = args.ToArray(), InvokeId = invokeId, Headers = headers };
+                        }
+
+                    case 1:
+                        {
+                            var data = r.ReadAmfObject(encoding);
+                            return new Notify(streamId, type) { Data = data };
+                        }
+
+                    case 2:
+                        {
+                            var data = r.ReadAmfObject(encoding);
+                            return new SharedObject(streamId, type) { Data = data };
+                        }
+
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(message));
+                }
             }
 
             class Builder : IDisposable
@@ -1445,9 +1584,9 @@ namespace Rtmp.Net
             static Exception NotSupportedException(string type) => new NotSupportedException($"packets with the type \"{type}\" aren't supported right now.");
         }
 
-        #endregion
+#endregion
 
-        #region Writer
+#region Writer
 
         class Writer
         {
@@ -1484,7 +1623,7 @@ namespace Rtmp.Net
                 if (external && message is ChunkLength)
                     throw new InvalidOperationException("cannot modify chunk length after stream has begun");
 
-                queue.Enqueue(new Packet(chunkStreamId, message.ContentType, Serialize(message)));
+                queue.Enqueue(new Packet(chunkStreamId, message.StreamId, message.ContentType, Serialize(message)));
                 reset.Set();
             }
 
@@ -1553,7 +1692,7 @@ namespace Rtmp.Net
                     next.Ready = true;
                     next.ContentType = packet.Type;
                     next.ChunkStreamId = packet.StreamId;
-                    next.MessageStreamId = 0;
+                    next.MessageStreamId = packet.MessageStreamId;
                     next.MessageLength = packetLength;
                     next.Timestamp = Ts.CurrentTime;
 
@@ -1579,11 +1718,13 @@ namespace Rtmp.Net
                 //                       they're identical. we can use existing logic and add if statements to surround
                 //                       writing the invokeid + headers if needed.
 
-                const int WriteInitialBufferLength = 4096; //: 4192
+                const int WriteInitialBufferLength = 4192;
 
                 var w = new AmfWriter(WriteInitialBufferLength, context);
 
-                Kon.Trace($"<< {message.ContentType} {(message as Invoke)?.MethodName}");
+#if DEBUG_STREAM
+                Kon.Trace($"<< {message.StreamId}:{message.ContentType} {(message as Invoke)?.MethodName}");
+#endif
                 switch (message.ContentType)
                 {
                     case PacketContentType.SetChunkSize:
@@ -1603,11 +1744,9 @@ namespace Rtmp.Net
 
                     case PacketContentType.UserControlMessage:
                         var d = (UserControlMessage)message;
-
                         w.WriteUInt16((ushort)d.EventType);
                         foreach (var value in d.Values)
                             w.WriteUInt32(value);
-
                         break;
 
                     case PacketContentType.WindowAcknowledgementSize:
@@ -1628,20 +1767,34 @@ namespace Rtmp.Net
                         break;
 
                     case PacketContentType.DataAmf0:
-                        throw NotSupportedException("data-amf0");
+                        //throw NotSupportedException("data-amf0"); //: guess
+                        WriteCommand(ObjectEncoding.Amf0, w, message);
+                        break;
 
                     case PacketContentType.SharedObjectAmf0:
-                        throw NotSupportedException("sharedobject-amf0");
+                        //throw NotSupportedException("sharedobject-amf0"); //: guess
+                        WriteCommand(ObjectEncoding.Amf0, w, message);
+                        break;
 
                     case PacketContentType.CommandAmf0:
                         WriteCommand(ObjectEncoding.Amf0, w, message);
                         break;
 
                     case PacketContentType.DataAmf3:
-                        throw NotSupportedException("data-amf3");
+                        //throw NotSupportedException("data-amf3"); //: guess
+                        // first byte is an encoding specifier byte.
+                        //     see `writecommand` comment below: specify amf0 object encoding and elevate into amf3.
+                        w.WriteByte((byte)ObjectEncoding.Amf0);
+                        WriteCommand(ObjectEncoding.Amf3, w, message);
+                        break;
 
                     case PacketContentType.SharedObjectAmf3:
-                        throw NotSupportedException("sharedobject-amf0");
+                        //throw NotSupportedException("sharedobject-amf0"); //: guess
+                        // first byte is an encoding specifier byte.
+                        //     see `writecommand` comment below: specify amf0 object encoding and elevate into amf3.
+                        w.WriteByte((byte)ObjectEncoding.Amf0);
+                        WriteCommand(ObjectEncoding.Amf3, w, message);
+                        break;
 
                     case PacketContentType.CommandAmf3:
                         // first byte is an encoding specifier byte.
@@ -1669,6 +1822,10 @@ namespace Rtmp.Net
                         w.WriteBoxedAmf0Object(encoding, notify.Data);
                         break;
 
+                    case SharedObject sharedObject:
+                        w.WriteBoxedAmf0Object(encoding, sharedObject.Data);
+                        break;
+
                     case Invoke request:
                         w.WriteBoxedAmf0Object(encoding, request.MethodName);
                         w.WriteBoxedAmf0Object(encoding, request.InvokeId);
@@ -1680,7 +1837,7 @@ namespace Rtmp.Net
                         break;
 
                     default:
-                        throw new ArgumentOutOfRangeException();
+                        throw new ArgumentOutOfRangeException(nameof(message));
                 }
             }
 
@@ -1688,12 +1845,14 @@ namespace Rtmp.Net
             {
                 // this is the chunk stream id. as above, we only ever use one message stream per chunk stream.
                 public int StreamId;
+                public uint MessageStreamId;
                 public Space<byte> Span;
                 public PacketContentType Type;
 
-                public Packet(int streamId, PacketContentType type, Space<byte> span)
+                public Packet(int streamId, uint messageStreamId, PacketContentType type, Space<byte> span)
                 {
                     StreamId = streamId;
+                    MessageStreamId = messageStreamId;
                     Type = type;
                     Span = span;
                 }
@@ -1702,8 +1861,8 @@ namespace Rtmp.Net
             static Exception NotSupportedException(string type) => new NotSupportedException($"packets with the type \"{type}\" aren't supported right now.");
         }
 
-        #endregion
+#endregion
     }
 
-    #endregion
+#endregion
 }

@@ -60,8 +60,7 @@ namespace Rtmp.FlexMessages
     [Rtmp("flex.messaging.messages.AcknowledgeMessage", "DSK")]
     class AcknowledgeMessage : FlexMessage
     {
-        public AcknowledgeMessage()
-            => Timestamp = Environment.TickCount;
+        public AcknowledgeMessage() => Timestamp = Environment.TickCount;
     }
 
     #endregion
