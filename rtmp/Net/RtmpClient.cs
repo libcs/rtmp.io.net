@@ -36,7 +36,7 @@ namespace Rtmp.Net
 
     #region PacketContentType
 
-    enum PacketContentType : byte
+    public enum PacketContentType : byte
     {
         SetChunkSize = 1,
         AbortMessage = 2,
@@ -87,6 +87,8 @@ namespace Rtmp.Net
         public event EventHandler<MessageReceivedEventArgs> MessageReceived;
         public event EventHandler<ClientDisconnectedException> Disconnected;
         public event EventHandler<Exception> CallbackException;
+        public Action<RtmpMessage> DispatchMessage;
+        public Action<Invoke> DispatchInvoke;
 
         // the server
         internal readonly RtmpServer server;
@@ -115,6 +117,7 @@ namespace Rtmp.Net
 
         // true if this connection is no longer connected
         bool disconnected;
+        public bool Connected => !disconnected;
 
         // a tuple describing the cause of the disconnection. either value may be null.
         (string message, Exception inner) cause;
@@ -147,11 +150,7 @@ namespace Rtmp.Net
         public override string ToString() =>
             $"RtmpClient {clientId}";
 
-        #region internal callbacks
-
-        // `internalreceivesubscriptionvalue` will never throw an exception
-        void InternalReceiveSubscriptionValue(string clientId, string subtopic, object body) =>
-            WrapCallback(() => MessageReceived?.Invoke(this, new MessageReceivedEventArgs(clientId, subtopic, body)));
+        #region internal callbacks            
 
         // called internally by the readers and writers when an error that would invalidate this connection occurs.
         // `inner` may be null.
@@ -268,10 +267,6 @@ namespace Rtmp.Net
                     queue(new UserControlMessage(UserControlMessage.Type.PingResponse, u.Values), 2);
                     break;
 
-                case UserControlMessage u:
-                    //Console.WriteLine($"USERCONTROLMESSAGE: {u.ContentType}");
-                    break;
-
                 case Invoke i:
                     var param = i.Arguments?.FirstOrDefault();
 
@@ -317,11 +312,11 @@ namespace Rtmp.Net
                         case "receive":
                             if (param is AsyncMessage c)
                             {
-                                var id = c.ClientId;
-                                var value = c.Headers.TryGetValue(AsyncMessageHeaders.Subtopic, out var x) ? x as string : null;
+                                var clientId = c.ClientId;
+                                var subtopic = c.Headers.TryGetValue(AsyncMessageHeaders.Subtopic, out var x) ? x as string : null;
                                 var body = c.Body;
 
-                                InternalReceiveSubscriptionValue(id, value, body);
+                                WrapCallback(() => MessageReceived?.Invoke(this, new MessageReceivedEventArgs(clientId, subtopic, body)));
                             }
                             break;
 
@@ -341,6 +336,16 @@ namespace Rtmp.Net
                                 InternalReceiveConnect(i.InvokeId, headers);
                             break;
 
+                        case "releaseStream":
+                            Kon.Trace("received releaseStream");
+                            Check.NotNull(server);
+                            break;
+
+                        case "deleteStream":
+                            Kon.Trace("received deleteStream");
+                            Check.NotNull(server);
+                            break;
+
                         case "createStream":
                             Kon.Trace("received createStream");
                             Check.NotNull(server);
@@ -353,24 +358,23 @@ namespace Rtmp.Net
                             InternalReceivePublish(i.InvokeId, i.StreamId);
                             break;
 
-                        case "FCUnpublish_":
+                        case "FCPublish":
+                            Kon.Trace("received FCPublish");
+                            break;
+
+                        case "FCUnpublish":
                             Kon.Trace("received FCUnpublish");
-                            InternalCloseConnection("close-requested-by-request", null);
+                            //InternalCloseConnection("close-requested-by-request", null);
                             break;
 
                         default:
+                            Kon.Trace("unknown rtmp invoke method requested", new { method = i.MethodName, args = i.Arguments });
+                            WrapCallback(() => DispatchInvoke?.Invoke(i));
                             break;
-                            // [2016-12-26] workaround roslyn compiler bug that would cause the following default cause to
-                            // cause a nullreferenceexception on the owning switch statement.
-                            //     default:
-                            //         Kon.DebugRun(() =>
-                            //         {
-                            //             Kon.Trace("unknown rtmp invoke method requested", new { method = i.MethodName, args = i.Arguments });
-                            //             Debugger.Break();
-                            //         });
-                            //
-                            //         break;
                     }
+                    break;
+                default:
+                    WrapCallback(() => DispatchMessage?.Invoke(message));
                     break;
             }
         }
@@ -394,7 +398,7 @@ namespace Rtmp.Net
             return task;
         }
 
-        void InternalExec(Invoke request, int chunkStreamId)
+        void InternalExec(RtmpMessage request, int chunkStreamId)
         {
             if (disconnected) throw DisconnectedException();
 
@@ -426,7 +430,7 @@ namespace Rtmp.Net
         {
             public string Url;
             public int ChunkLength = 4192;
-            public SerializationContext Context;
+            public SerializationContext Context = new SerializationContext();
 
             // the below fields are optional, and may be null
             public string AppName;
@@ -569,6 +573,9 @@ namespace Rtmp.Net
         // some servers will fail if `destination` is null (but not if it's an empty string)
         const string NoDestination = "";
 
+        public void SendMessage(RtmpMessage message, int chunkStreamId = 3) =>
+            InternalExec(message, chunkStreamId);
+
         public async Task<T> InvokeAsync<T>(string method, params object[] arguments) =>
             NanoTypeConverter.ConvertTo<T>(
                 await InternalCallAsync(new InvokeAmf0(0U)
@@ -577,6 +584,14 @@ namespace Rtmp.Net
                     MethodName = method,
                     Arguments = arguments
                 }, 3));
+
+        public void Execute(string method, params object[] arguments) =>
+            InternalExec(new InvokeAmf0(0U)
+            {
+                InvokeId = 0,
+                MethodName = method,
+                Arguments = arguments
+            }, 3);
 
         public async Task<T> InvokeAsyncOnStream<T>(uint streamId, string method, params object[] arguments) =>
             NanoTypeConverter.ConvertTo<T>(
@@ -1294,14 +1309,12 @@ namespace Rtmp.Net
             {
                 if (!stream.CanRead)
                     throw new EndOfStreamException("rtmp connection was closed by the remote peer");
-
                 var read = await stream.ReadAsync(new Space<byte>(buffer, available), token);
-
                 if (read == 0)
                 {
-                    //throw new EndOfStreamException("rtmp connection was closed by the remote peer");
-                    owner.InternalCloseConnection("reader-closed", null);
-                    return;
+                    throw new EndOfStreamException("rtmp connection was closed by the remote peer");
+                    //owner.InternalCloseConnection("reader-closed", null);
+                    //return;
                 }
 
                 available += read;
@@ -1584,9 +1597,9 @@ namespace Rtmp.Net
             static Exception NotSupportedException(string type) => new NotSupportedException($"packets with the type \"{type}\" aren't supported right now.");
         }
 
-#endregion
+        #endregion
 
-#region Writer
+        #region Writer
 
         class Writer
         {
@@ -1861,8 +1874,8 @@ namespace Rtmp.Net
             static Exception NotSupportedException(string type) => new NotSupportedException($"packets with the type \"{type}\" aren't supported right now.");
         }
 
-#endregion
+        #endregion
     }
 
-#endregion
+    #endregion
 }

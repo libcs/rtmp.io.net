@@ -147,7 +147,7 @@ namespace Rtmp.Net
         public class Options
         {
             public string Url;
-            public SerializationContext Context;
+            public SerializationContext Context = new SerializationContext();
 
             public RemoteCertificateValidationCallback Validate;
             public X509Certificate ServerCertificate;
@@ -167,7 +167,7 @@ namespace Rtmp.Net
                 clients.Remove(x.Key);
         }
 
-        async Task ConnectClientAsync(TcpClient tcp, Uri uri, Options options, int max_clients)
+        async Task ConnectClientAsync(TcpClient tcp, Uri uri, Options options, Action<RtmpClient> onConnected, int max_clients)
         {
             var validate = options.Validate ?? ((sender, certificate, chain, errors) => true);
             var serverCertificate = options.ServerCertificate;
@@ -184,9 +184,10 @@ namespace Rtmp.Net
 
             Kon.Assert(clients.Count < max_clients);
             clients.Add(clientId, (client, clientOptions));
+            onConnected?.Invoke(client);
         }
 
-        public static async Task<RtmpServer> ConnectAsync(Options options, int max_clients = 5)
+        public static async Task<RtmpServer> ConnectAsync(Options options, Action<RtmpClient> onConnected, int max_clients = 5)
         {
             Check.NotNull(options, options.Context);
 
@@ -198,7 +199,7 @@ namespace Rtmp.Net
 
             var server = new RtmpServer(context, options);
 
-            server.RunAsync(tcpListener, async tcp => await server.ConnectClientAsync(tcp, uri, options, max_clients)).Forget();
+            server.RunAsync(tcpListener, async tcp => await server.ConnectClientAsync(tcp, uri, options, onConnected, max_clients)).Forget();
 
             return server;
         }

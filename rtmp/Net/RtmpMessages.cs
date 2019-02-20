@@ -5,7 +5,7 @@ namespace Rtmp.Net.RtmpMessages
 {
     #region RtmpMessage
 
-    abstract class RtmpMessage
+    public abstract class RtmpMessage
     {
         public readonly uint StreamId;
         public readonly PacketContentType ContentType;
@@ -41,7 +41,7 @@ namespace Rtmp.Net.RtmpMessages
 
     #region AudioVideoData
 
-    abstract class ByteData : RtmpMessage
+    public abstract class ByteData : RtmpMessage
     {
         public readonly byte[] Data;
 
@@ -49,12 +49,12 @@ namespace Rtmp.Net.RtmpMessages
             Data = data;
     }
 
-    class AudioData : ByteData
+    public class AudioData : ByteData
     {
         public AudioData(uint streamId, byte[] data) : base(streamId, data, PacketContentType.Audio) { }
     }
 
-    class VideoData : ByteData
+    public class VideoData : ByteData
     {
         public VideoData(uint streamId, byte[] data) : base(streamId, data, PacketContentType.Video) { }
     }
@@ -75,7 +75,7 @@ namespace Rtmp.Net.RtmpMessages
 
     #region Invoke
 
-    class Invoke : RtmpMessage
+    public class Invoke : RtmpMessage
     {
         public string MethodName;
         public object[] Arguments;
@@ -85,12 +85,12 @@ namespace Rtmp.Net.RtmpMessages
         internal Invoke(uint streamId, PacketContentType type) : base(streamId, type) { }
     }
 
-    class InvokeAmf0 : Invoke
+    public class InvokeAmf0 : Invoke
     {
         public InvokeAmf0(uint streamId) : base(streamId, PacketContentType.CommandAmf0) { }
     }
 
-    class InvokeAmf3 : Invoke
+    public class InvokeAmf3 : Invoke
     {
         public InvokeAmf3(uint streamId) : base(streamId, PacketContentType.CommandAmf3) { }
     }
@@ -99,19 +99,19 @@ namespace Rtmp.Net.RtmpMessages
 
     #region Notify
 
-    class Notify : RtmpMessage
+    public class Notify : RtmpMessage
     {
         public object Data;
 
         internal Notify(uint streamId, PacketContentType type) : base(streamId, type) { }
     }
 
-    class NotifyAmf0 : Notify
+    public class NotifyAmf0 : Notify
     {
         public NotifyAmf0(uint streamId) : base(streamId, PacketContentType.DataAmf0) { }
     }
 
-    class NotifyAmf3 : Notify
+    public class NotifyAmf3 : Notify
     {
         public NotifyAmf3(uint streamId) : base(streamId, PacketContentType.DataAmf3) { }
     }
@@ -120,19 +120,19 @@ namespace Rtmp.Net.RtmpMessages
 
     #region SharedObject
 
-    class SharedObject : RtmpMessage
+    public class SharedObject : RtmpMessage
     {
         public object Data;
 
         internal SharedObject(uint streamId, PacketContentType type) : base(streamId, type) { }
     }
 
-    class SharedObjectAmf0 : SharedObject
+    public class SharedObjectAmf0 : SharedObject
     {
         public SharedObjectAmf0(uint streamId) : base(streamId, PacketContentType.SharedObjectAmf0) { }
     }
 
-    class SharedObjectAmf3 : SharedObject
+    public class SharedObjectAmf3 : SharedObject
     {
         public SharedObjectAmf3(uint streamId) : base(streamId, PacketContentType.SharedObjectAmf3) { }
     }
