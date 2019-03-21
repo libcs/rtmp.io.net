@@ -1,13 +1,43 @@
 rtmp_version = "1.0"
 
-newaction
-{
-    trigger     = "test",
-    description = "Build and run all unit tests",
-    execute = function ()
-      os.execute "dotnet run -p test"
-    end
-}
+libs = { "System" }
+
+solution "rtmp"
+    kind "ConsoleApp"
+    language "C#"
+    platforms { "x64" }
+    configurations { "Debug", "Release" }
+    links { libs }
+    configuration "Debug"
+        symbols "On"
+        defines { "DEBUG" }
+    configuration "Release"
+        optimize "Speed"
+        
+project "test"
+    files { "test.cs", "shared_h.cs" }
+    links { "rtmp" }
+
+project "rtmp"
+    kind "SharedLib"
+    defines { "RTMP" }
+    files { "rtmp.cs" }
+
+if not os.istarget "windows" then
+else
+
+    -- Windows
+    newaction
+    {
+        trigger     = "solution",
+        description = "Create and open the rtmp.io.net solution",
+        execute = function ()
+            os.execute "premake5 vs2015"
+            os.execute "start rtmp.sln"
+        end
+    }
+
+end
 
 newaction
 {
@@ -17,13 +47,18 @@ newaction
         files_to_delete = 
         {
             "Makefile",
+            "packages.config",
             "*.make",
             "*.txt",
             "*.zip",
             "*.tar.gz",
             "*.db",
             "*.opendb",
+            "*.csproj",
             "*.csproj.user",
+            "*.sln",
+            "*.xcodeproj",
+            "*.xcworkspace"
         }
         directories_to_delete = 
         {

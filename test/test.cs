@@ -3,7 +3,6 @@ using Rtmp;
 using Rtmp.Net;
 using System;
 using System.Diagnostics;
-using System.Threading;
 using System.Threading.Tasks;
 
 public static class test
@@ -38,7 +37,7 @@ public static class test
 
     static async Task test_connect()
     {
-        var key = "live_48269693_OhemQ7S4gQy7y27byu47TRERxyzgLl";
+        var key = "live_key";
         var options = new RtmpClient.Options
         {
             // required parameters:
@@ -64,15 +63,34 @@ public static class test
 
     static async Task test_server()
     {
-        var context = new SerializationContext();
-        var options = new RtmpServer.Options()
+        var options = new RtmpServer.Options
         {
             // required parameters:
-            Context = context,
+            Context = new SerializationContext(),
         };
-
-        using (var server = await RtmpServer.ConnectAsync(options))
+        using (var server = await RtmpServer.ConnectAsync(options, x => { }))
             server.Wait();
+    }
+
+    static async Task test_client_server()
+    {
+        var serverOptions = new RtmpServer.Options
+        {
+            Url = "rtmp://localhost:4000/key",
+            Context = new SerializationContext(),
+        };
+        using (var server = await RtmpServer.ConnectAsync(serverOptions, x => { }))
+        {
+            var clientOptions = new RtmpClient.Options
+            {
+                Url = "rtmp://localhost:4000/key",
+                Context = new SerializationContext(),
+            };
+            using (var client = await RtmpClient.ConnectAsync(clientOptions))
+            {
+                Console.WriteLine("Connect");
+            }
+        }
     }
 
     static void RUN_TEST(string name, Action test_function) { Console.Write($"{name}\n"); test_function(); }
@@ -98,8 +116,9 @@ public static class test
             Console.Write("\n[rtmp]\n\n");
 
             //RUN_TEST("test_endian", test_endian);
-            RUN_TESTASYNC("test_connect", test_connect);
+            //RUN_TESTASYNC("test_connect", test_connect);
             //RUN_TESTASYNC("test_server", test_server);
+            RUN_TESTASYNC("test_client_server", test_client_server);
 
 #if SOAK
             if (quit)

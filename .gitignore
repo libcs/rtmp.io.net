@@ -4,6 +4,7 @@
 # *.csproj
 *.csproj.user
 # *.sln
+.vscode
 packages
 packages.config
 
